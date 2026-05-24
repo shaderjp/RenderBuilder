@@ -4,6 +4,10 @@
 
 RenderBuilder は、ランタイム HLSL 開発のための Windows / Visual Studio 2022 向けシェーダエディタのプロトタイプです。
 
+## ドキュメント
+
+- [シーンファイルと基本操作](Docs/SceneAndControls.ja.md)
+
 ## 現在の MVP
 
 - DirectX 12 Agility SDK 1.619.3 を使う Direct3D 12 first のレンダラー。
@@ -13,7 +17,7 @@ RenderBuilder は、ランタイム HLSL 開発のための Windows / Visual Stu
 - `Shaders/RenderBuilderShaderABI.hlsli` による固定シェーダ ABI。
 - シェーダのコンパイル成功時は D3D12 PSO を再構築し、失敗時は最後に成功した PSO を維持して diagnostics にエラーを表示。
 - 組み込みプレビュー cube と、Assimp による glTF/GLB、FBX、OBJ の scene import。
-- DirectXTex による DDS/TGA/HDR/WIC 画像の texture upload と checker fallback。
+- DirectXTex による DDS/TGA/HDR/WIC 画像の material texture slot upload と checker fallback。
 - imported material を material ごとの draw routing と shader set assignment で描画。
 
 ## LookDev ロードマップ

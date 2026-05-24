@@ -4,6 +4,10 @@
 
 RenderBuilder is a Windows / Visual Studio 2022 shader editor prototype for runtime HLSL development.
 
+## Documentation
+
+- [Scene files and controls (Japanese)](Docs/SceneAndControls.ja.md)
+
 ## Current MVP
 
 - Direct3D 12 first renderer using DirectX 12 Agility SDK 1.619.3.
@@ -13,7 +17,7 @@ RenderBuilder is a Windows / Visual Studio 2022 shader editor prototype for runt
 - Fixed shader ABI in `Shaders/RenderBuilderShaderABI.hlsli`.
 - Successful shader compiles rebuild the D3D12 PSO; failed compiles keep the last valid PSO and show diagnostics.
 - Built-in preview cube plus Assimp scene import for glTF/GLB, FBX, and OBJ preview meshes.
-- DirectXTex base-color texture upload for DDS/TGA/HDR/WIC images, with a checker fallback.
+- DirectXTex material texture slot upload for DDS/TGA/HDR/WIC images, with a checker fallback.
 - Imported materials are rendered through per-material draw routing and shader set assignment.
 
 ## LookDev Roadmap
