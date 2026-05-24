@@ -1,0 +1,1913 @@
+#include "RenderBuilderApp.h"
+
+#include <imgui.h>
+#include <imgui_impl_dx12.h>
+#include <imgui_impl_win32.h>
+
+#include <CommCtrl.h>
+#include <commdlg.h>
+#include <Objbase.h>
+
+#include <algorithm>
+#include <cfloat>
+#include <cctype>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
+#include <unordered_map>
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
+
+namespace
+{
+constexpr std::size_t ShaderBufferSize = 256 * 1024;
+constexpr UINT_PTR ResizeMoveTimerId = 1;
+constexpr std::size_t MaterialTextureSlotCount = 4;
+constexpr const char* TextureSlotLabels[MaterialTextureSlotCount] =
+{
+    "Base Color",
+    "Normal",
+    "Roughness",
+    "Metallic",
+};
+constexpr const char* TextureSlotJsonNames[MaterialTextureSlotCount] =
+{
+    "baseColor",
+    "normal",
+    "roughness",
+    "metallic",
+};
+constexpr const wchar_t* TextureFileFilter = L"Texture Files\0*.dds;*.tga;*.hdr;*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff\0All Files\0*.*\0";
+
+std::wstring Utf8ToWide(const std::string& text)
+{
+    if (text.empty())
+    {
+        return {};
+    }
+    const int length = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    std::wstring wide(static_cast<std::size_t>(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), length);
+    return wide;
+}
+
+std::string WideToUtf8(const std::wstring& text)
+{
+    if (text.empty())
+    {
+        return {};
+    }
+    const int length = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+    std::string utf8(static_cast<std::size_t>(length), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), utf8.data(), length, nullptr, nullptr);
+    return utf8;
+}
+
+std::string ReadTextFile(const std::filesystem::path& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+    {
+        throw std::runtime_error("Failed to open text file: " + path.string());
+    }
+    std::ostringstream stream;
+    stream << file.rdbuf();
+    return stream.str();
+}
+
+void WriteTextFile(const std::filesystem::path& path, const std::string& text)
+{
+    std::ofstream file(path, std::ios::binary);
+    if (!file)
+    {
+        throw std::runtime_error("Failed to write text file: " + path.string());
+    }
+    file << text;
+}
+
+std::string EscapeJson(const std::string& text)
+{
+    std::string escaped;
+    escaped.reserve(text.size() + 8);
+    for (const char ch : text)
+    {
+        switch (ch)
+        {
+        case '\\': escaped += "\\\\"; break;
+        case '"': escaped += "\\\""; break;
+        case '\n': escaped += "\\n"; break;
+        case '\r': escaped += "\\r"; break;
+        case '\t': escaped += "\\t"; break;
+        default: escaped += ch; break;
+        }
+    }
+    return escaped;
+}
+
+std::string TextureFileName(const std::wstring& path)
+{
+    if (path.empty())
+    {
+        return "<none>";
+    }
+    return WideToUtf8(std::filesystem::path(path).filename().wstring());
+}
+
+std::wstring SceneTexturePath(const rb::SceneMaterial& material, std::size_t textureSlot)
+{
+    switch (textureSlot)
+    {
+    case 0: return material.baseColorTexturePath;
+    case 1: return material.normalTexturePath;
+    case 2: return material.roughnessTexturePath;
+    case 3: return material.metallicTexturePath;
+    default: return {};
+    }
+}
+
+struct JsonValue
+{
+    enum class Type
+    {
+        Null,
+        Bool,
+        Number,
+        String,
+        Array,
+        Object,
+    };
+
+    Type type = Type::Null;
+    bool boolean = false;
+    double number = 0.0;
+    std::string string;
+    std::vector<JsonValue> array;
+    std::unordered_map<std::string, JsonValue> object;
+};
+
+class JsonParser
+{
+public:
+    explicit JsonParser(const std::string& text) : m_text(text) {}
+
+    JsonValue Parse()
+    {
+        JsonValue value = ParseValue();
+        SkipWhitespace();
+        if (m_position != m_text.size())
+        {
+            throw std::runtime_error("Unexpected trailing characters in project JSON.");
+        }
+        return value;
+    }
+
+private:
+    JsonValue ParseValue()
+    {
+        SkipWhitespace();
+        if (m_position >= m_text.size())
+        {
+            throw std::runtime_error("Unexpected end of project JSON.");
+        }
+
+        switch (m_text[m_position])
+        {
+        case '{': return ParseObject();
+        case '[': return ParseArray();
+        case '"':
+        {
+            JsonValue value;
+            value.type = JsonValue::Type::String;
+            value.string = ParseString();
+            return value;
+        }
+        case 't': return ParseLiteral("true", JsonValue::Type::Bool, true);
+        case 'f': return ParseLiteral("false", JsonValue::Type::Bool, false);
+        case 'n': return ParseLiteral("null", JsonValue::Type::Null, false);
+        default:
+            if (m_text[m_position] == '-' || std::isdigit(static_cast<unsigned char>(m_text[m_position])))
+            {
+                return ParseNumber();
+            }
+            throw std::runtime_error("Invalid token in project JSON.");
+        }
+    }
+
+    JsonValue ParseObject()
+    {
+        JsonValue value;
+        value.type = JsonValue::Type::Object;
+        Expect('{');
+        SkipWhitespace();
+        if (TryConsume('}'))
+        {
+            return value;
+        }
+
+        while (true)
+        {
+            SkipWhitespace();
+            const std::string key = ParseString();
+            SkipWhitespace();
+            Expect(':');
+            value.object[key] = ParseValue();
+            SkipWhitespace();
+            if (TryConsume('}'))
+            {
+                break;
+            }
+            Expect(',');
+        }
+        return value;
+    }
+
+    JsonValue ParseArray()
+    {
+        JsonValue value;
+        value.type = JsonValue::Type::Array;
+        Expect('[');
+        SkipWhitespace();
+        if (TryConsume(']'))
+        {
+            return value;
+        }
+
+        while (true)
+        {
+            value.array.push_back(ParseValue());
+            SkipWhitespace();
+            if (TryConsume(']'))
+            {
+                break;
+            }
+            Expect(',');
+        }
+        return value;
+    }
+
+    JsonValue ParseLiteral(const char* literal, JsonValue::Type type, bool boolean)
+    {
+        const std::size_t length = std::strlen(literal);
+        if (m_text.compare(m_position, length, literal) != 0)
+        {
+            throw std::runtime_error("Invalid literal in project JSON.");
+        }
+        m_position += length;
+
+        JsonValue value;
+        value.type = type;
+        value.boolean = boolean;
+        return value;
+    }
+
+    JsonValue ParseNumber()
+    {
+        const std::size_t begin = m_position;
+        if (m_text[m_position] == '-')
+        {
+            ++m_position;
+        }
+        ConsumeDigits();
+        if (m_position < m_text.size() && m_text[m_position] == '.')
+        {
+            ++m_position;
+            ConsumeDigits();
+        }
+        if (m_position < m_text.size() && (m_text[m_position] == 'e' || m_text[m_position] == 'E'))
+        {
+            ++m_position;
+            if (m_position < m_text.size() && (m_text[m_position] == '+' || m_text[m_position] == '-'))
+            {
+                ++m_position;
+            }
+            ConsumeDigits();
+        }
+
+        JsonValue value;
+        value.type = JsonValue::Type::Number;
+        value.number = std::stod(m_text.substr(begin, m_position - begin));
+        return value;
+    }
+
+    std::string ParseString()
+    {
+        Expect('"');
+        std::string result;
+        while (m_position < m_text.size())
+        {
+            const char ch = m_text[m_position++];
+            if (ch == '"')
+            {
+                return result;
+            }
+            if (ch != '\\')
+            {
+                result.push_back(ch);
+                continue;
+            }
+
+            if (m_position >= m_text.size())
+            {
+                throw std::runtime_error("Unterminated escape in project JSON string.");
+            }
+            const char escaped = m_text[m_position++];
+            switch (escaped)
+            {
+            case '"': result.push_back('"'); break;
+            case '\\': result.push_back('\\'); break;
+            case '/': result.push_back('/'); break;
+            case 'b': result.push_back('\b'); break;
+            case 'f': result.push_back('\f'); break;
+            case 'n': result.push_back('\n'); break;
+            case 'r': result.push_back('\r'); break;
+            case 't': result.push_back('\t'); break;
+            case 'u':
+                for (int i = 0; i < 4; ++i)
+                {
+                    if (m_position >= m_text.size() || !std::isxdigit(static_cast<unsigned char>(m_text[m_position])))
+                    {
+                        throw std::runtime_error("Invalid unicode escape in project JSON string.");
+                    }
+                    ++m_position;
+                }
+                result.push_back('?');
+                break;
+            default:
+                throw std::runtime_error("Invalid escape in project JSON string.");
+            }
+        }
+        throw std::runtime_error("Unterminated string in project JSON.");
+    }
+
+    void ConsumeDigits()
+    {
+        bool consumed = false;
+        while (m_position < m_text.size() && std::isdigit(static_cast<unsigned char>(m_text[m_position])))
+        {
+            consumed = true;
+            ++m_position;
+        }
+        if (!consumed)
+        {
+            throw std::runtime_error("Invalid number in project JSON.");
+        }
+    }
+
+    void SkipWhitespace()
+    {
+        while (m_position < m_text.size() && std::isspace(static_cast<unsigned char>(m_text[m_position])))
+        {
+            ++m_position;
+        }
+    }
+
+    void Expect(char expected)
+    {
+        if (m_position >= m_text.size() || m_text[m_position] != expected)
+        {
+            throw std::runtime_error("Unexpected character in project JSON.");
+        }
+        ++m_position;
+    }
+
+    bool TryConsume(char expected)
+    {
+        if (m_position < m_text.size() && m_text[m_position] == expected)
+        {
+            ++m_position;
+            return true;
+        }
+        return false;
+    }
+
+    const std::string& m_text;
+    std::size_t m_position = 0;
+};
+
+const JsonValue* FindMember(const JsonValue& value, const char* name)
+{
+    if (value.type != JsonValue::Type::Object)
+    {
+        return nullptr;
+    }
+    const auto it = value.object.find(name);
+    return it != value.object.end() ? &it->second : nullptr;
+}
+
+std::string JsonStringOr(const JsonValue& value, const char* name, const std::string& fallback = {})
+{
+    const JsonValue* member = FindMember(value, name);
+    if (!member || member->type != JsonValue::Type::String)
+    {
+        return fallback;
+    }
+    return member->string;
+}
+
+double JsonNumberOr(const JsonValue& value, const char* name, double fallback)
+{
+    const JsonValue* member = FindMember(value, name);
+    if (!member || member->type != JsonValue::Type::Number)
+    {
+        return fallback;
+    }
+    return member->number;
+}
+
+bool JsonBoolOr(const JsonValue& value, const char* name, bool fallback)
+{
+    const JsonValue* member = FindMember(value, name);
+    if (!member || member->type != JsonValue::Type::Bool)
+    {
+        return fallback;
+    }
+    return member->boolean;
+}
+
+std::array<float, 4> JsonFloat4Or(const JsonValue& value, const char* name, const std::array<float, 4>& fallback)
+{
+    const JsonValue* member = FindMember(value, name);
+    if (!member || member->type != JsonValue::Type::Array || member->array.size() < 4)
+    {
+        return fallback;
+    }
+
+    std::array<float, 4> result = fallback;
+    for (std::size_t i = 0; i < result.size(); ++i)
+    {
+        if (member->array[i].type != JsonValue::Type::Number)
+        {
+            return fallback;
+        }
+        result[i] = static_cast<float>(member->array[i].number);
+    }
+    return result;
+}
+}
+
+namespace rb
+{
+int RenderBuilderApp::Run(HINSTANCE instance, int showCommand)
+{
+    try
+    {
+        Initialize(instance, showCommand);
+        MSG message = {};
+        while (m_running)
+        {
+            while (PeekMessage(&message, nullptr, 0, 0, PM_REMOVE))
+            {
+                if (message.message == WM_QUIT)
+                {
+                    m_running = false;
+                    break;
+                }
+                TranslateMessage(&message);
+                DispatchMessage(&message);
+            }
+
+            if (m_running)
+            {
+                Tick();
+            }
+        }
+        m_backend.Shutdown();
+        if (m_comInitialized)
+        {
+            CoUninitialize();
+            m_comInitialized = false;
+        }
+        return 0;
+    }
+    catch (const std::exception& ex)
+    {
+        m_backend.Shutdown();
+        if (m_comInitialized)
+        {
+            CoUninitialize();
+            m_comInitialized = false;
+        }
+        MessageBoxA(nullptr, ex.what(), "RenderBuilder fatal error", MB_ICONERROR | MB_OK);
+        return 1;
+    }
+}
+
+void RenderBuilderApp::Initialize(HINSTANCE instance, int showCommand)
+{
+    const HRESULT coInitializeResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (SUCCEEDED(coInitializeResult))
+    {
+        m_comInitialized = true;
+    }
+    else if (coInitializeResult != RPC_E_CHANGED_MODE)
+    {
+        throw std::runtime_error("CoInitializeEx failed.");
+    }
+
+    m_rootDirectory = FindRootDirectory();
+    LoadRecentProjects();
+    m_shaderTextBuffer.resize(ShaderBufferSize);
+
+    WNDCLASSEXW windowClass = {};
+    windowClass.cbSize = sizeof(windowClass);
+    windowClass.style = CS_HREDRAW | CS_VREDRAW;
+    windowClass.lpfnWndProc = RenderBuilderApp::WindowProc;
+    windowClass.hInstance = instance;
+    windowClass.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    windowClass.lpszClassName = L"RenderBuilderWindowClass";
+    RegisterClassExW(&windowClass);
+
+    RECT windowRect = { 0, 0, static_cast<LONG>(m_windowWidth), static_cast<LONG>(m_windowHeight) };
+    AdjustWindowRect(&windowRect, WS_OVERLAPPEDWINDOW, FALSE);
+    m_hwnd = CreateWindowExW(
+        0,
+        windowClass.lpszClassName,
+        L"RenderBuilder Shader Editor",
+        WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        windowRect.right - windowRect.left,
+        windowRect.bottom - windowRect.top,
+        nullptr,
+        nullptr,
+        instance,
+        this);
+    if (!m_hwnd)
+    {
+        throw std::runtime_error("CreateWindowEx failed.");
+    }
+
+    ShowWindow(m_hwnd, showCommand);
+    UpdateWindow(m_hwnd);
+
+    m_backend.Initialize(m_hwnd, m_windowWidth, m_windowHeight);
+    m_shaderCompiler = std::make_unique<DxcShaderCompiler>();
+    LoadDefaultShader();
+    CompileActiveShader();
+    SetProjectDirty(false);
+    m_lastTick = std::chrono::high_resolution_clock::now();
+}
+
+std::filesystem::path RenderBuilderApp::FindRootDirectory() const
+{
+    std::filesystem::path current = std::filesystem::current_path();
+    for (int i = 0; i < 6; ++i)
+    {
+        if (std::filesystem::exists(current / "Shaders" / "DefaultRaster.hlsl"))
+        {
+            return current;
+        }
+        if (!current.has_parent_path())
+        {
+            break;
+        }
+        current = current.parent_path();
+    }
+
+    wchar_t modulePath[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
+    current = std::filesystem::path(modulePath).parent_path();
+    for (int i = 0; i < 8; ++i)
+    {
+        if (std::filesystem::exists(current / "Shaders" / "DefaultRaster.hlsl"))
+        {
+            return current;
+        }
+        current = current.parent_path();
+    }
+    return std::filesystem::current_path();
+}
+
+void RenderBuilderApp::LoadDefaultShader()
+{
+    const std::filesystem::path shaderPath = m_rootDirectory / "Shaders" / "DefaultRaster.hlsl";
+    LoadShaderFromDisk(shaderPath);
+    m_activeShaderSet.name = "Default Raster Shader";
+    m_activeShaderSet.vertexEntry = L"VSMain";
+    m_activeShaderSet.pixelEntry = L"PSMain";
+    m_activeShaderSet.vertexProfile = L"vs_6_9";
+    m_activeShaderSet.pixelProfile = L"ps_6_9";
+
+    m_project.shaderSets = { m_activeShaderSet };
+    m_project.materialAssignments = { { "Default Material", m_activeShaderSet.name } };
+    m_activeShaderSetIndex = 0;
+    m_backend.SetSkyColors(m_project.skyTopColor, m_project.skyHorizonColor);
+}
+
+void RenderBuilderApp::UpdateWindowTitle() const
+{
+    if (!m_hwnd)
+    {
+        return;
+    }
+
+    std::wstring title = L"RenderBuilder Shader Editor";
+    if (!m_project.path.empty())
+    {
+        title += L" - ";
+        if (m_projectDirty)
+        {
+            title += L"*";
+        }
+        title += std::filesystem::path(m_project.path).filename().wstring();
+    }
+    else if (m_projectDirty)
+    {
+        title += L" - *Untitled";
+    }
+    SetWindowTextW(m_hwnd, title.c_str());
+}
+
+void RenderBuilderApp::SetProjectDirty(bool dirty)
+{
+    if (m_projectDirty == dirty)
+    {
+        UpdateWindowTitle();
+        return;
+    }
+    m_projectDirty = dirty;
+    UpdateWindowTitle();
+}
+
+void RenderBuilderApp::MarkProjectDirty()
+{
+    SetProjectDirty(true);
+}
+
+void RenderBuilderApp::LoadShaderFromDisk(const std::filesystem::path& path)
+{
+    m_activeShaderSet.sourcePath = path.wstring();
+    m_activeShaderSet.sourceText = ReadTextFile(path);
+    std::fill(m_shaderTextBuffer.begin(), m_shaderTextBuffer.end(), '\0');
+    const std::size_t copySize = std::min(m_activeShaderSet.sourceText.size(), m_shaderTextBuffer.size() - 1);
+    std::memcpy(m_shaderTextBuffer.data(), m_activeShaderSet.sourceText.data(), copySize);
+    m_shaderDirty = false;
+}
+
+void RenderBuilderApp::SynchronizeActiveShaderSet()
+{
+    m_activeShaderSet.sourceText.assign(m_shaderTextBuffer.data());
+    if (m_project.shaderSets.empty())
+    {
+        m_project.shaderSets.push_back(m_activeShaderSet);
+        m_activeShaderSetIndex = 0;
+    }
+    if (m_activeShaderSetIndex >= m_project.shaderSets.size())
+    {
+        m_activeShaderSetIndex = 0;
+    }
+    m_project.shaderSets[m_activeShaderSetIndex] = m_activeShaderSet;
+}
+
+void RenderBuilderApp::SelectShaderSet(std::size_t index)
+{
+    if (index >= m_project.shaderSets.size() || index == m_activeShaderSetIndex)
+    {
+        return;
+    }
+
+    SynchronizeActiveShaderSet();
+    m_activeShaderSetIndex = index;
+    m_activeShaderSet = m_project.shaderSets[m_activeShaderSetIndex];
+    std::fill(m_shaderTextBuffer.begin(), m_shaderTextBuffer.end(), '\0');
+    const std::size_t copySize = std::min(m_activeShaderSet.sourceText.size(), m_shaderTextBuffer.size() - 1);
+    std::memcpy(m_shaderTextBuffer.data(), m_activeShaderSet.sourceText.data(), copySize);
+    m_shaderDirty = false;
+}
+
+void RenderBuilderApp::CreateShaderSetFromActive()
+{
+    SynchronizeActiveShaderSet();
+
+    ShaderSet shaderSet = m_activeShaderSet;
+    char name[64] = {};
+    std::snprintf(name, sizeof(name), "Shader Set %u", m_shaderSetSerial++);
+    shaderSet.name = name;
+    shaderSet.sourcePath.clear();
+    m_project.shaderSets.push_back(shaderSet);
+    SelectShaderSet(m_project.shaderSets.size() - 1);
+    m_shaderDirty = true;
+    MarkProjectDirty();
+}
+
+void RenderBuilderApp::Tick()
+{
+    const auto now = std::chrono::high_resolution_clock::now();
+    const float deltaSeconds = std::chrono::duration<float>(now - m_lastTick).count();
+    m_deltaSeconds = deltaSeconds;
+    m_lastTick = now;
+
+    if (m_minimized)
+    {
+        Sleep(16);
+        return;
+    }
+
+    if (!m_inSizeMove)
+    {
+        ApplyPendingResize();
+        ApplyPendingSceneTargetResize();
+    }
+
+    ImGui_ImplDX12_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S))
+    {
+        SaveProject();
+    }
+    DrawUi();
+    m_backend.Render(deltaSeconds, m_activeVertexShader, m_activePixelShader);
+}
+
+void RenderBuilderApp::RequestResize(UINT width, UINT height)
+{
+    m_pendingResizeWidth = std::max(width, 1u);
+    m_pendingResizeHeight = std::max(height, 1u);
+    m_pendingResize = true;
+}
+
+void RenderBuilderApp::ApplyPendingResize()
+{
+    if (!m_pendingResize || !m_backend.Device())
+    {
+        return;
+    }
+
+    m_pendingResize = false;
+    m_backend.Resize(m_pendingResizeWidth, m_pendingResizeHeight);
+}
+
+void RenderBuilderApp::RequestSceneTargetResize(UINT width, UINT height)
+{
+    width = std::max(width, 1u);
+    height = std::max(height, 1u);
+    if (width == m_backend.SceneWidth() && height == m_backend.SceneHeight())
+    {
+        m_pendingSceneTargetResize = false;
+        return;
+    }
+
+    m_pendingSceneTargetWidth = width;
+    m_pendingSceneTargetHeight = height;
+    m_pendingSceneTargetResize = true;
+}
+
+void RenderBuilderApp::ApplyPendingSceneTargetResize()
+{
+    if (!m_pendingSceneTargetResize || !m_backend.Device())
+    {
+        return;
+    }
+
+    const UINT width = m_pendingSceneTargetWidth;
+    const UINT height = m_pendingSceneTargetHeight;
+    m_pendingSceneTargetResize = false;
+    m_backend.ResizeSceneTarget(width, height);
+}
+
+void RenderBuilderApp::DrawUi()
+{
+    DrawDockspace();
+    DrawViewportPanel();
+    DrawShaderEditorPanel();
+    DrawMaterialInspectorPanel();
+    DrawAssetBrowserPanel();
+    DrawDiagnosticsPanel();
+    DrawStatsPanel();
+}
+
+void RenderBuilderApp::DrawDockspace()
+{
+    ImGuiWindowFlags windowFlags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::SetNextWindowViewport(viewport->ID);
+    windowFlags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
+    windowFlags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::Begin("RenderBuilderDockspace", nullptr, windowFlags);
+    ImGui::PopStyleVar(2);
+
+    if (ImGui::BeginMenuBar())
+    {
+        if (ImGui::BeginMenu("File"))
+        {
+            if (ImGui::MenuItem("Open Shader..."))
+            {
+                const auto path = OpenFileDialog(L"HLSL Files\0*.hlsl;*.hlsli\0All Files\0*.*\0");
+                if (!path.empty())
+                {
+                    LoadShaderFromDisk(path);
+                    CompileActiveShader();
+                    MarkProjectDirty();
+                }
+            }
+            if (ImGui::MenuItem("Open Scene..."))
+            {
+                const auto path = OpenFileDialog(L"Model Files\0*.gltf;*.glb;*.fbx;*.obj\0All Files\0*.*\0");
+                if (!path.empty())
+                {
+                    LoadScenePath(path.wstring());
+                }
+            }
+            if (ImGui::MenuItem("Open Project..."))
+            {
+                LoadProject();
+            }
+            if (ImGui::MenuItem("Save Project", "Ctrl+S"))
+            {
+                SaveProject();
+            }
+            if (ImGui::MenuItem("Save Project As..."))
+            {
+                SaveProjectAs();
+            }
+            if (ImGui::BeginMenu("Recent Projects", !m_recentProjects.empty()))
+            {
+                for (const std::filesystem::path& recentPath : m_recentProjects)
+                {
+                    const std::string label = recentPath.string();
+                    if (ImGui::MenuItem(label.c_str()))
+                    {
+                        LoadProjectFromDisk(recentPath);
+                    }
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::MenuItem("Exit"))
+            {
+                PostQuitMessage(0);
+            }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Build"))
+        {
+            if (ImGui::MenuItem("Compile Shader", "Ctrl+Enter"))
+            {
+                CompileActiveShader();
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::EndMenuBar();
+    }
+
+    const ImGuiID dockspaceId = ImGui::GetID("RenderBuilderDockspaceId");
+    ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
+    ImGui::End();
+}
+
+void RenderBuilderApp::DrawViewportPanel()
+{
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::Begin("Viewport");
+    const ImVec2 available = ImGui::GetContentRegionAvail();
+    if (available.x < 1.0f || available.y < 1.0f)
+    {
+        ImGui::End();
+        ImGui::PopStyleVar();
+        return;
+    }
+
+    ImVec2 imageSize = available;
+    const UINT targetWidth = static_cast<UINT>(std::max(imageSize.x, 1.0f));
+    const UINT targetHeight = static_cast<UINT>(std::max(imageSize.y, 1.0f));
+    RequestSceneTargetResize(targetWidth, targetHeight);
+    const D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = m_backend.SceneSrvGpu();
+    const ImTextureID textureId = static_cast<ImTextureID>(gpuHandle.ptr);
+    const ImVec2 imageTopLeft = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton(
+        "ViewportCanvas",
+        imageSize,
+        ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
+    const ImVec2 imageBottomRight(imageTopLeft.x + imageSize.x, imageTopLeft.y + imageSize.y);
+    ImGui::GetWindowDrawList()->AddImage(textureId, imageTopLeft, imageBottomRight);
+    HandleViewportCameraControls();
+    ImGui::End();
+    ImGui::PopStyleVar();
+}
+
+void RenderBuilderApp::HandleViewportCameraControls()
+{
+    ImGuiIO& io = ImGui::GetIO();
+    const bool viewportHovered = ImGui::IsItemHovered();
+    const bool viewportActive = ImGui::IsItemActive();
+    const bool viewportFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+
+    if (viewportHovered)
+    {
+        if (io.MouseWheel != 0.0f)
+        {
+            m_backend.DollyCamera(io.MouseWheel);
+        }
+
+        if (viewportActive && ImGui::IsMouseDragging(ImGuiMouseButton_Left))
+        {
+            m_backend.OrbitCamera(io.MouseDelta.x * 0.008f, -io.MouseDelta.y * 0.008f);
+        }
+        else if (viewportActive && (ImGui::IsMouseDragging(ImGuiMouseButton_Middle) || ImGui::IsMouseDragging(ImGuiMouseButton_Right)))
+        {
+            m_backend.PanCamera(io.MouseDelta.x * 0.002f, io.MouseDelta.y * 0.002f);
+        }
+    }
+
+    if (viewportHovered || viewportActive || viewportFocused)
+    {
+        const float speed = (io.KeyShift ? 1.8f : 0.65f) * m_deltaSeconds;
+        float forward = 0.0f;
+        float right = 0.0f;
+        float up = 0.0f;
+
+        if (ImGui::IsKeyDown(ImGuiKey_W)) { forward += speed; }
+        if (ImGui::IsKeyDown(ImGuiKey_S)) { forward -= speed; }
+        if (ImGui::IsKeyDown(ImGuiKey_D)) { right += speed; }
+        if (ImGui::IsKeyDown(ImGuiKey_A)) { right -= speed; }
+        if (ImGui::IsKeyDown(ImGuiKey_E)) { up += speed; }
+        if (ImGui::IsKeyDown(ImGuiKey_Q)) { up -= speed; }
+        if (forward != 0.0f || right != 0.0f || up != 0.0f)
+        {
+            m_backend.MoveCamera(forward, right, up);
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_Home))
+        {
+            m_backend.ResetCameraToScene();
+        }
+    }
+}
+
+void RenderBuilderApp::DrawShaderEditorPanel()
+{
+    ImGui::Begin("Shader Editor");
+    if (ImGui::BeginCombo("Shader Set", m_activeShaderSet.name.c_str()))
+    {
+        for (std::size_t i = 0; i < m_project.shaderSets.size(); ++i)
+        {
+            const bool selected = i == m_activeShaderSetIndex;
+            if (ImGui::Selectable(m_project.shaderSets[i].name.c_str(), selected))
+            {
+                SelectShaderSet(i);
+            }
+            if (selected)
+            {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("New"))
+    {
+        CreateShaderSetFromActive();
+    }
+
+    char shaderName[128] = {};
+    const std::string previousName = m_activeShaderSet.name;
+    strncpy_s(shaderName, m_activeShaderSet.name.c_str(), _TRUNCATE);
+    if (ImGui::InputText("Name", shaderName, sizeof(shaderName)))
+    {
+        if (shaderName[0] != '\0')
+        {
+            m_activeShaderSet.name = shaderName;
+            for (MaterialAssignment& assignment : m_project.materialAssignments)
+            {
+                if (assignment.shaderSetName == previousName)
+                {
+                    assignment.shaderSetName = m_activeShaderSet.name;
+                }
+            }
+            m_backend.SetMaterialAssignments(m_project.materialAssignments);
+            m_shaderDirty = true;
+            SynchronizeActiveShaderSet();
+            MarkProjectDirty();
+        }
+    }
+
+    ImGui::Text("Source: %s", m_activeShaderSet.sourcePath.empty() ? "<memory>" : WideToUtf8(m_activeShaderSet.sourcePath).c_str());
+    ImGui::SameLine();
+    if (m_shaderDirty)
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f), "modified");
+    }
+    else
+    {
+        ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f), "compiled");
+    }
+
+    ImGui::PushItemWidth(140.0f);
+    char vsEntry[64] = {};
+    char psEntry[64] = {};
+    const std::string vsEntryText = WideToUtf8(m_activeShaderSet.vertexEntry);
+    const std::string psEntryText = WideToUtf8(m_activeShaderSet.pixelEntry);
+    strncpy_s(vsEntry, vsEntryText.c_str(), _TRUNCATE);
+    strncpy_s(psEntry, psEntryText.c_str(), _TRUNCATE);
+    if (ImGui::InputText("VS Entry", vsEntry, sizeof(vsEntry)))
+    {
+        m_activeShaderSet.vertexEntry = Utf8ToWide(vsEntry);
+        m_shaderDirty = true;
+        MarkProjectDirty();
+    }
+    ImGui::SameLine();
+    if (ImGui::InputText("PS Entry", psEntry, sizeof(psEntry)))
+    {
+        m_activeShaderSet.pixelEntry = Utf8ToWide(psEntry);
+        m_shaderDirty = true;
+        MarkProjectDirty();
+    }
+    ImGui::PopItemWidth();
+
+    if (ImGui::Button("Compile"))
+    {
+        CompileActiveShader();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reload Default"))
+    {
+        const std::string activeName = m_activeShaderSet.name;
+        LoadShaderFromDisk(m_rootDirectory / "Shaders" / "DefaultRaster.hlsl");
+        m_activeShaderSet.name = activeName;
+        m_activeShaderSet.vertexEntry = L"VSMain";
+        m_activeShaderSet.pixelEntry = L"PSMain";
+        m_activeShaderSet.vertexProfile = L"vs_6_9";
+        m_activeShaderSet.pixelProfile = L"ps_6_9";
+        SynchronizeActiveShaderSet();
+        CompileActiveShader();
+        MarkProjectDirty();
+    }
+
+    ImGuiInputTextFlags flags = ImGuiInputTextFlags_AllowTabInput;
+    if (ImGui::InputTextMultiline("##ShaderSource", m_shaderTextBuffer.data(), m_shaderTextBuffer.size(), ImVec2(-FLT_MIN, -FLT_MIN), flags))
+    {
+        m_shaderDirty = true;
+        MarkProjectDirty();
+    }
+    ImGui::End();
+}
+
+void RenderBuilderApp::DrawMaterialInspectorPanel()
+{
+    ImGui::Begin("Material Inspector");
+    if (m_project.materialAssignments.empty())
+    {
+        ImGui::TextUnformatted("No imported materials yet.");
+    }
+    for (MaterialAssignment& assignment : m_project.materialAssignments)
+    {
+        ImGui::PushID(assignment.materialName.c_str());
+        ImGui::SeparatorText(assignment.materialName.c_str());
+        bool assignmentChanged = false;
+        if (ImGui::BeginCombo("Shader Set", assignment.shaderSetName.c_str()))
+        {
+            for (const ShaderSet& shaderSet : m_project.shaderSets)
+            {
+                const bool selected = assignment.shaderSetName == shaderSet.name;
+                if (ImGui::Selectable(shaderSet.name.c_str(), selected))
+                {
+                    assignment.shaderSetName = shaderSet.name;
+                    assignmentChanged = true;
+                }
+                if (selected)
+                {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+        const SceneMaterial* sceneMaterial = FindSceneMaterial(assignment.materialName);
+
+        if (ImGui::ColorEdit4("Base Color Factor", assignment.baseColorFactor.data()))
+        {
+            assignmentChanged = true;
+        }
+        ImGui::PushItemWidth(180.0f);
+        if (ImGui::SliderFloat("Roughness Factor", &assignment.roughnessFactor, 0.0f, 1.0f, "%.2f"))
+        {
+            assignmentChanged = true;
+        }
+        if (ImGui::SliderFloat("Metallic Factor", &assignment.metallicFactor, 0.0f, 1.0f, "%.2f"))
+        {
+            assignmentChanged = true;
+        }
+        ImGui::PopItemWidth();
+
+        ImGui::SeparatorText("Textures");
+        for (std::size_t textureSlot = 0; textureSlot < MaterialTextureSlotCount; ++textureSlot)
+        {
+            ImGui::PushID(static_cast<int>(textureSlot));
+            const std::wstring importedPath = sceneMaterial ? SceneTexturePath(*sceneMaterial, textureSlot) : std::wstring();
+            const std::wstring effectivePath = EffectiveTexturePath(assignment, textureSlot);
+            const char* sourceLabel = assignment.textureOverrideEnabled[textureSlot]
+                ? (effectivePath.empty() ? "cleared" : "override")
+                : (importedPath.empty() ? "none" : "imported");
+
+            ImGui::Text("%s: %s", TextureSlotLabels[textureSlot], TextureFileName(effectivePath).c_str());
+            if (ImGui::IsItemHovered() && !effectivePath.empty())
+            {
+                ImGui::SetTooltip("%s", WideToUtf8(effectivePath).c_str());
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%s)", sourceLabel);
+            ImGui::SameLine();
+            if (ImGui::Button("Browse..."))
+            {
+                const auto path = OpenFileDialog(TextureFileFilter);
+                if (!path.empty())
+                {
+                    assignment.textureOverrideEnabled[textureSlot] = true;
+                    assignment.textureOverrides[textureSlot] = path.wstring();
+                    ApplyMaterialTextureSlot(assignment, textureSlot);
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Clear"))
+            {
+                assignment.textureOverrideEnabled[textureSlot] = true;
+                assignment.textureOverrides[textureSlot].clear();
+                ApplyMaterialTextureSlot(assignment, textureSlot);
+            }
+            if (assignment.textureOverrideEnabled[textureSlot])
+            {
+                ImGui::SameLine();
+                if (ImGui::Button("Use Imported"))
+                {
+                    assignment.textureOverrideEnabled[textureSlot] = false;
+                    assignment.textureOverrides[textureSlot].clear();
+                    ApplyMaterialTextureSlot(assignment, textureSlot);
+                }
+            }
+            ImGui::PopID();
+        }
+
+        ImGui::PushItemWidth(180.0f);
+        if (ImGui::SliderFloat("Normal Strength", &assignment.normalStrength, 0.0f, 2.0f, "%.2f"))
+        {
+            assignmentChanged = true;
+        }
+        ImGui::PopItemWidth();
+        if (ImGui::Checkbox("Flip Normal Green", &assignment.flipNormalGreen))
+        {
+            assignmentChanged = true;
+        }
+        if (assignmentChanged)
+        {
+            m_backend.SetMaterialAssignments(m_project.materialAssignments);
+            MarkProjectDirty();
+        }
+        ImGui::TextUnformatted("Pipeline: Raster VS/PS");
+        ImGui::PopID();
+    }
+    ImGui::Separator();
+    ImGui::TextDisabled("Mesh Shader and Ray Tracing assignment slots are present in the data model and disabled until their backend milestones land.");
+    ImGui::End();
+}
+
+void RenderBuilderApp::DrawAssetBrowserPanel()
+{
+    ImGui::Begin("Scene / Asset Browser");
+    ImGui::Text("Root: %s", m_rootDirectory.string().c_str());
+    ImGui::Text("Project: %s%s",
+        m_projectDirty ? "*" : "",
+        m_project.path.empty() ? "<untitled>" : WideToUtf8(m_project.path).c_str());
+    ImGui::Text("Scene: %s", m_project.scenePath.empty() ? "<built-in cube>" : WideToUtf8(m_project.scenePath).c_str());
+    ImGui::Text("Geometry: %zu vertices, %zu indices, %zu draws", m_sceneVertexCount, m_sceneIndexCount, m_sceneDrawCount);
+    bool skyChanged = false;
+    skyChanged |= ImGui::ColorEdit3("Sky Top", m_project.skyTopColor.data());
+    skyChanged |= ImGui::ColorEdit3("Sky Horizon", m_project.skyHorizonColor.data());
+    if (skyChanged)
+    {
+        m_project.skyTopColor[3] = 1.0f;
+        m_project.skyHorizonColor[3] = 1.0f;
+        m_backend.SetSkyColors(m_project.skyTopColor, m_project.skyHorizonColor);
+        MarkProjectDirty();
+    }
+    if (ImGui::Button("Load Scene..."))
+    {
+        const auto path = OpenFileDialog(L"Model Files\0*.gltf;*.glb;*.fbx;*.obj\0All Files\0*.*\0");
+        if (!path.empty())
+        {
+            LoadScenePath(path.wstring());
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Open Project..."))
+    {
+        LoadProject();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Save Project"))
+    {
+        SaveProject();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Save As..."))
+    {
+        SaveProjectAs();
+    }
+    ImGui::Separator();
+    ImGui::TextWrapped("%s", m_sceneDiagnostics.c_str());
+    ImGui::End();
+}
+
+void RenderBuilderApp::DrawDiagnosticsPanel()
+{
+    ImGui::Begin("Compile Diagnostics");
+    if (m_lastCompileSucceeded)
+    {
+        ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f), "Last compile succeeded.");
+    }
+    else
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "Last compile failed. Keeping last valid PSO.");
+    }
+    ImGui::Separator();
+    ImGui::TextWrapped("%s", m_compileDiagnostics.c_str());
+    ImGui::End();
+}
+
+void RenderBuilderApp::DrawStatsPanel()
+{
+    const BackendCapabilities caps = m_backend.Capabilities();
+    ImGui::Begin("Renderer Stats");
+    ImGui::Text("Backend: Direct3D 12");
+    ImGui::Text("Adapter: %s", caps.adapterName.c_str());
+    ImGui::Text("Frame: %llu", static_cast<unsigned long long>(m_backend.FrameNumber()));
+    ImGui::Text("CPU frame: %.3f ms", m_backend.LastFrameMs());
+    ImGui::Text("Preview target: %u x %u", m_backend.SceneWidth(), m_backend.SceneHeight());
+    ImGui::Text("Vertex count: %u", m_backend.VertexCount());
+    ImGui::Text("Index count: %u", m_backend.IndexCount());
+    ImGui::Separator();
+    ImGui::Text("SM 6.9: %s", caps.shaderModel69 ? "available" : "not reported");
+    ImGui::Text("Mesh Shader: %s", caps.meshShader ? "available" : "disabled");
+    ImGui::Text("Ray Tracing: %s", caps.rayTracing ? "available" : "disabled");
+    ImGui::Text("Vulkan Backend: planned");
+    ImGui::End();
+}
+
+void RenderBuilderApp::CompileActiveShader()
+{
+    SynchronizeActiveShaderSet();
+
+    std::string diagnostics;
+    const bool succeeded = CompileShaderSet(m_project.shaderSets[m_activeShaderSetIndex], &m_activeVertexShader, &m_activePixelShader, diagnostics);
+    m_activeShaderSet = m_project.shaderSets[m_activeShaderSetIndex];
+    m_lastCompileSucceeded = succeeded;
+    if (succeeded)
+    {
+        m_shaderDirty = false;
+    }
+    m_compileDiagnostics = diagnostics;
+}
+
+bool RenderBuilderApp::CompileShaderSet(ShaderSet& shaderSet, std::vector<std::uint8_t>* vertexShader, std::vector<std::uint8_t>* pixelShader, std::string& diagnostics)
+{
+    const std::wstring includeDirectory = (m_rootDirectory / "Shaders").wstring();
+
+    ShaderCompileRequest vsRequest;
+    vsRequest.sourceName = shaderSet.sourcePath.empty() ? L"ShaderEditor.hlsl" : shaderSet.sourcePath;
+    vsRequest.source = shaderSet.sourceText;
+    vsRequest.includeDirectory = includeDirectory;
+    vsRequest.entryPoint = shaderSet.vertexEntry;
+    vsRequest.profile = shaderSet.vertexProfile;
+
+    ShaderCompileRequest psRequest = vsRequest;
+    psRequest.entryPoint = shaderSet.pixelEntry;
+    psRequest.profile = shaderSet.pixelProfile;
+
+    const ShaderCompileResult vs = m_shaderCompiler->Compile(vsRequest);
+    const ShaderCompileResult ps = m_shaderCompiler->Compile(psRequest);
+
+    std::ostringstream output;
+    output << "[" << shaderSet.name << "]\n";
+    output << "[Vertex Shader]\n" << vs.diagnostics << "\n\n[Pixel Shader]\n" << ps.diagnostics << "\n";
+
+    if (vs.succeeded && ps.succeeded)
+    {
+        std::string psoDiagnostics;
+        if (m_backend.TryApplyShaders(shaderSet.name, vs.bytecode, ps.bytecode, psoDiagnostics))
+        {
+            if (vertexShader)
+            {
+                *vertexShader = vs.bytecode;
+            }
+            if (pixelShader)
+            {
+                *pixelShader = ps.bytecode;
+            }
+            output << "\n[D3D12]\n" << psoDiagnostics;
+            diagnostics = output.str();
+            return true;
+        }
+        output << "\n[D3D12]\n" << psoDiagnostics;
+    }
+
+    diagnostics = output.str();
+    return false;
+}
+
+void RenderBuilderApp::LoadScenePath(const std::wstring& path, bool markDirty)
+{
+    SceneImportResult result = m_sceneImporter.ImportScene(path);
+    if (!result.succeeded)
+    {
+        m_sceneDiagnostics = result.diagnostics;
+        return;
+    }
+
+    std::string backendDiagnostics;
+    if (!m_backend.LoadSceneMesh(result.scene, backendDiagnostics))
+    {
+        m_sceneDiagnostics = result.diagnostics + "\n" + backendDiagnostics;
+        return;
+    }
+
+    m_project.scenePath = path;
+    m_sceneMaterials = result.scene.materials;
+    if (!result.scene.materials.empty())
+    {
+        m_project.materialAssignments.clear();
+        m_project.materialAssignments.reserve(result.scene.materials.size());
+        for (const SceneMaterial& material : result.scene.materials)
+        {
+            m_project.materialAssignments.push_back(material.assignment);
+        }
+        m_backend.SetMaterialAssignments(m_project.materialAssignments);
+    }
+    m_sceneVertexCount = result.scene.vertices.size();
+    m_sceneIndexCount = result.scene.indices.size();
+    m_sceneDrawCount = result.scene.draws.size();
+    m_sceneDiagnostics = result.diagnostics + "\n" + backendDiagnostics;
+    if (markDirty)
+    {
+        MarkProjectDirty();
+    }
+}
+
+const SceneMaterial* RenderBuilderApp::FindSceneMaterial(const std::string& materialName) const
+{
+    const auto it = std::find_if(
+        m_sceneMaterials.begin(),
+        m_sceneMaterials.end(),
+        [&materialName](const SceneMaterial& material)
+        {
+            return material.assignment.materialName == materialName;
+        });
+    return it != m_sceneMaterials.end() ? &(*it) : nullptr;
+}
+
+std::wstring RenderBuilderApp::ImportedTexturePath(const std::string& materialName, std::size_t textureSlot) const
+{
+    const SceneMaterial* material = FindSceneMaterial(materialName);
+    return material ? SceneTexturePath(*material, textureSlot) : std::wstring();
+}
+
+std::wstring RenderBuilderApp::EffectiveTexturePath(const MaterialAssignment& assignment, std::size_t textureSlot) const
+{
+    if (textureSlot >= MaterialTextureSlotCount)
+    {
+        return {};
+    }
+    if (assignment.textureOverrideEnabled[textureSlot])
+    {
+        return assignment.textureOverrides[textureSlot];
+    }
+    return ImportedTexturePath(assignment.materialName, textureSlot);
+}
+
+void RenderBuilderApp::ApplyMaterialTextureSlot(const MaterialAssignment& assignment, std::size_t textureSlot)
+{
+    std::string diagnostics;
+    const std::wstring effectivePath = EffectiveTexturePath(assignment, textureSlot);
+    if (m_backend.UpdateMaterialTextureSlot(assignment.materialName, static_cast<std::uint32_t>(textureSlot), effectivePath, diagnostics))
+    {
+        m_sceneDiagnostics = std::string(TextureSlotLabels[textureSlot]) + " texture updated for " + assignment.materialName + ".\n" + diagnostics;
+    }
+    else
+    {
+        m_sceneDiagnostics = std::string(TextureSlotLabels[textureSlot]) + " texture update failed for " + assignment.materialName + ".\n" + diagnostics;
+    }
+    MarkProjectDirty();
+}
+
+void RenderBuilderApp::ApplyMaterialTextureOverrides(const std::vector<MaterialAssignment>& assignments)
+{
+    std::ostringstream diagnostics;
+    for (const MaterialAssignment& assignment : assignments)
+    {
+        for (std::size_t textureSlot = 0; textureSlot < MaterialTextureSlotCount; ++textureSlot)
+        {
+            if (!assignment.textureOverrideEnabled[textureSlot])
+            {
+                continue;
+            }
+
+            std::string textureDiagnostics;
+            const std::wstring effectivePath = EffectiveTexturePath(assignment, textureSlot);
+            if (m_backend.UpdateMaterialTextureSlot(assignment.materialName, static_cast<std::uint32_t>(textureSlot), effectivePath, textureDiagnostics))
+            {
+                diagnostics << "\n" << assignment.materialName << " " << TextureSlotLabels[textureSlot] << ": " << textureDiagnostics;
+            }
+            else
+            {
+                diagnostics << "\n" << assignment.materialName << " " << TextureSlotLabels[textureSlot] << " failed: " << textureDiagnostics;
+            }
+        }
+    }
+    const std::string text = diagnostics.str();
+    if (!text.empty())
+    {
+        m_sceneDiagnostics += text;
+    }
+}
+
+void RenderBuilderApp::SaveProject()
+{
+    if (m_project.path.empty())
+    {
+        SaveProjectAs();
+        return;
+    }
+    SaveProjectToDisk(std::filesystem::path(m_project.path));
+}
+
+void RenderBuilderApp::SaveProjectAs()
+{
+    const auto path = SaveFileDialog(L"RenderBuilder Project\0*.renderbuilder.json;*.json\0All Files\0*.*\0", L"renderbuilder.json");
+    if (path.empty())
+    {
+        return;
+    }
+    SaveProjectToDisk(path);
+}
+
+bool RenderBuilderApp::SaveProjectToDisk(const std::filesystem::path& requestedPath)
+{
+    try
+    {
+        SynchronizeActiveShaderSet();
+        std::filesystem::path path = requestedPath;
+        if (path.extension().empty())
+        {
+            path += L".renderbuilder.json";
+        }
+
+        const std::filesystem::path parent = path.parent_path();
+        if (!parent.empty())
+        {
+            std::filesystem::create_directories(parent);
+        }
+
+        std::ostringstream json;
+        json << "{\n";
+        json << "  \"backend\": \"D3D12\",\n";
+        json << "  \"scenePath\": \"" << EscapeJson(WideToUtf8(m_project.scenePath)) << "\",\n";
+        json << "  \"skyTopColor\": ["
+             << m_project.skyTopColor[0] << ", "
+             << m_project.skyTopColor[1] << ", "
+             << m_project.skyTopColor[2] << ", "
+             << m_project.skyTopColor[3] << "],\n";
+        json << "  \"skyHorizonColor\": ["
+             << m_project.skyHorizonColor[0] << ", "
+             << m_project.skyHorizonColor[1] << ", "
+             << m_project.skyHorizonColor[2] << ", "
+             << m_project.skyHorizonColor[3] << "],\n";
+        json << "  \"shaderSourcePath\": \"" << EscapeJson(WideToUtf8(m_activeShaderSet.sourcePath)) << "\",\n";
+        json << "  \"vertexEntry\": \"" << EscapeJson(WideToUtf8(m_activeShaderSet.vertexEntry)) << "\",\n";
+        json << "  \"pixelEntry\": \"" << EscapeJson(WideToUtf8(m_activeShaderSet.pixelEntry)) << "\",\n";
+        json << "  \"pipelineKind\": \"RasterVSPS\",\n";
+        json << "  \"activeShaderSet\": \"" << EscapeJson(m_activeShaderSet.name) << "\",\n";
+        json << "  \"shaderSets\": [\n";
+        for (std::size_t i = 0; i < m_project.shaderSets.size(); ++i)
+        {
+            const ShaderSet& shaderSet = m_project.shaderSets[i];
+            json << "    { "
+                 << "\"name\": \"" << EscapeJson(shaderSet.name) << "\", "
+                 << "\"sourcePath\": \"" << EscapeJson(WideToUtf8(shaderSet.sourcePath)) << "\", "
+                 << "\"sourceText\": \"" << EscapeJson(shaderSet.sourceText) << "\", "
+                 << "\"vertexEntry\": \"" << EscapeJson(WideToUtf8(shaderSet.vertexEntry)) << "\", "
+                 << "\"pixelEntry\": \"" << EscapeJson(WideToUtf8(shaderSet.pixelEntry)) << "\", "
+                 << "\"vertexProfile\": \"" << EscapeJson(WideToUtf8(shaderSet.vertexProfile)) << "\", "
+                 << "\"pixelProfile\": \"" << EscapeJson(WideToUtf8(shaderSet.pixelProfile)) << "\", "
+                 << "\"pipelineKind\": \"RasterVSPS\" }";
+            json << (i + 1 < m_project.shaderSets.size() ? "," : "") << "\n";
+        }
+        json << "  ],\n";
+        json << "  \"materials\": [\n";
+        for (std::size_t i = 0; i < m_project.materialAssignments.size(); ++i)
+        {
+            const MaterialAssignment& material = m_project.materialAssignments[i];
+            json << "    { "
+                 << "\"name\": \"" << EscapeJson(material.materialName) << "\", "
+                 << "\"shaderSet\": \"" << EscapeJson(material.shaderSetName) << "\", "
+                 << "\"baseColorFactor\": ["
+                 << material.baseColorFactor[0] << ", "
+                 << material.baseColorFactor[1] << ", "
+                 << material.baseColorFactor[2] << ", "
+                 << material.baseColorFactor[3] << "], "
+                 << "\"roughnessFactor\": " << material.roughnessFactor << ", "
+                 << "\"metallicFactor\": " << material.metallicFactor << ", "
+                 << "\"normalStrength\": " << material.normalStrength << ", "
+                 << "\"flipNormalGreen\": " << (material.flipNormalGreen ? "true" : "false") << ", "
+                 << "\"textures\": { ";
+            for (std::size_t textureSlot = 0; textureSlot < MaterialTextureSlotCount; ++textureSlot)
+            {
+                json << "\"" << TextureSlotJsonNames[textureSlot] << "\": { "
+                     << "\"override\": " << (material.textureOverrideEnabled[textureSlot] ? "true" : "false") << ", "
+                     << "\"path\": \"" << EscapeJson(WideToUtf8(material.textureOverrides[textureSlot])) << "\" }";
+                json << (textureSlot + 1 < MaterialTextureSlotCount ? ", " : "");
+            }
+            json << " } }";
+            json << (i + 1 < m_project.materialAssignments.size() ? "," : "") << "\n";
+        }
+        json << "  ]\n";
+        json << "}\n";
+
+        WriteTextFile(path, json.str());
+        const std::filesystem::path normalizedPath = std::filesystem::absolute(path).lexically_normal();
+        m_project.path = normalizedPath.wstring();
+        AddRecentProject(normalizedPath);
+        SetProjectDirty(false);
+        m_sceneDiagnostics = "Saved project to " + path.string();
+        return true;
+    }
+    catch (const std::exception& ex)
+    {
+        m_sceneDiagnostics = "Project save failed: " + std::string(ex.what());
+        return false;
+    }
+}
+
+void RenderBuilderApp::LoadRecentProjects()
+{
+    m_recentProjects.clear();
+    try
+    {
+        const std::filesystem::path recentPath = m_rootDirectory / "Assets" / "RecentProjects.txt";
+        if (!std::filesystem::exists(recentPath))
+        {
+            return;
+        }
+
+        std::istringstream input(ReadTextFile(recentPath));
+        std::string line;
+        while (std::getline(input, line))
+        {
+            if (line.empty())
+            {
+                continue;
+            }
+            std::filesystem::path path(Utf8ToWide(line));
+            if (std::find(m_recentProjects.begin(), m_recentProjects.end(), path) == m_recentProjects.end())
+            {
+                m_recentProjects.push_back(path);
+            }
+            if (m_recentProjects.size() >= 8)
+            {
+                break;
+            }
+        }
+    }
+    catch (...)
+    {
+    }
+}
+
+void RenderBuilderApp::SaveRecentProjects() const
+{
+    try
+    {
+        const std::filesystem::path recentPath = m_rootDirectory / "Assets" / "RecentProjects.txt";
+        std::filesystem::create_directories(recentPath.parent_path());
+        std::ostringstream output;
+        for (const std::filesystem::path& path : m_recentProjects)
+        {
+            output << WideToUtf8(path.wstring()) << "\n";
+        }
+        WriteTextFile(recentPath, output.str());
+    }
+    catch (...)
+    {
+    }
+}
+
+void RenderBuilderApp::AddRecentProject(const std::filesystem::path& path)
+{
+    if (path.empty())
+    {
+        return;
+    }
+
+    const std::filesystem::path normalized = std::filesystem::absolute(path).lexically_normal();
+    m_recentProjects.erase(
+        std::remove(m_recentProjects.begin(), m_recentProjects.end(), normalized),
+        m_recentProjects.end());
+    m_recentProjects.insert(m_recentProjects.begin(), normalized);
+    if (m_recentProjects.size() > 8)
+    {
+        m_recentProjects.resize(8);
+    }
+    SaveRecentProjects();
+}
+
+void RenderBuilderApp::LoadProject()
+{
+    const auto path = OpenFileDialog(L"RenderBuilder Project\0*.renderbuilder.json;*.json\0All Files\0*.*\0");
+    if (!path.empty())
+    {
+        LoadProjectFromDisk(path);
+    }
+}
+
+void RenderBuilderApp::LoadProjectFromDisk(const std::filesystem::path& path)
+{
+    try
+    {
+        const JsonValue root = JsonParser(ReadTextFile(path)).Parse();
+        if (root.type != JsonValue::Type::Object)
+        {
+            throw std::runtime_error("Project JSON root must be an object.");
+        }
+
+        ProjectFile loadedProject;
+        loadedProject.path = std::filesystem::absolute(path).lexically_normal().wstring();
+        loadedProject.scenePath = Utf8ToWide(JsonStringOr(root, "scenePath"));
+        const std::array<float, 4> legacyClearColor = JsonFloat4Or(root, "viewportClearColor", loadedProject.skyHorizonColor);
+        loadedProject.skyTopColor = JsonFloat4Or(root, "skyTopColor", loadedProject.skyTopColor);
+        loadedProject.skyHorizonColor = JsonFloat4Or(root, "skyHorizonColor", legacyClearColor);
+        const std::string activeShaderSetName = JsonStringOr(root, "activeShaderSet", "Default Raster Shader");
+
+        const JsonValue* shaderSets = FindMember(root, "shaderSets");
+        if (shaderSets && shaderSets->type == JsonValue::Type::Array)
+        {
+            for (const JsonValue& shaderSetValue : shaderSets->array)
+            {
+                if (shaderSetValue.type != JsonValue::Type::Object)
+                {
+                    continue;
+                }
+
+                ShaderSet shaderSet;
+                shaderSet.name = JsonStringOr(shaderSetValue, "name", "Shader Set");
+                shaderSet.sourcePath = Utf8ToWide(JsonStringOr(shaderSetValue, "sourcePath"));
+                shaderSet.sourceText = JsonStringOr(shaderSetValue, "sourceText");
+                shaderSet.vertexEntry = Utf8ToWide(JsonStringOr(shaderSetValue, "vertexEntry", "VSMain"));
+                shaderSet.pixelEntry = Utf8ToWide(JsonStringOr(shaderSetValue, "pixelEntry", "PSMain"));
+                shaderSet.vertexProfile = Utf8ToWide(JsonStringOr(shaderSetValue, "vertexProfile", "vs_6_9"));
+                shaderSet.pixelProfile = Utf8ToWide(JsonStringOr(shaderSetValue, "pixelProfile", "ps_6_9"));
+                if (shaderSet.sourceText.empty() && !shaderSet.sourcePath.empty() && std::filesystem::exists(shaderSet.sourcePath))
+                {
+                    shaderSet.sourceText = ReadTextFile(shaderSet.sourcePath);
+                }
+                loadedProject.shaderSets.push_back(shaderSet);
+            }
+        }
+
+        if (loadedProject.shaderSets.empty())
+        {
+            ShaderSet shaderSet;
+            shaderSet.name = activeShaderSetName.empty() ? "Default Raster Shader" : activeShaderSetName;
+            shaderSet.sourcePath = Utf8ToWide(JsonStringOr(root, "shaderSourcePath"));
+            shaderSet.vertexEntry = Utf8ToWide(JsonStringOr(root, "vertexEntry", "VSMain"));
+            shaderSet.pixelEntry = Utf8ToWide(JsonStringOr(root, "pixelEntry", "PSMain"));
+            shaderSet.vertexProfile = L"vs_6_9";
+            shaderSet.pixelProfile = L"ps_6_9";
+            if (!shaderSet.sourcePath.empty() && std::filesystem::exists(shaderSet.sourcePath))
+            {
+                shaderSet.sourceText = ReadTextFile(shaderSet.sourcePath);
+            }
+            if (shaderSet.sourceText.empty())
+            {
+                shaderSet.sourcePath = (m_rootDirectory / "Shaders" / "DefaultRaster.hlsl").wstring();
+                shaderSet.sourceText = ReadTextFile(shaderSet.sourcePath);
+            }
+            loadedProject.shaderSets.push_back(shaderSet);
+        }
+
+        const JsonValue* materials = FindMember(root, "materials");
+        if (materials && materials->type == JsonValue::Type::Array)
+        {
+            for (const JsonValue& materialValue : materials->array)
+            {
+                if (materialValue.type != JsonValue::Type::Object)
+                {
+                    continue;
+                }
+
+                MaterialAssignment assignment;
+                assignment.materialName = JsonStringOr(materialValue, "name");
+                assignment.shaderSetName = JsonStringOr(materialValue, "shaderSet", loadedProject.shaderSets.front().name);
+                assignment.baseColorFactor = JsonFloat4Or(materialValue, "baseColorFactor", assignment.baseColorFactor);
+                assignment.roughnessFactor = static_cast<float>(JsonNumberOr(materialValue, "roughnessFactor", assignment.roughnessFactor));
+                assignment.metallicFactor = static_cast<float>(JsonNumberOr(materialValue, "metallicFactor", assignment.metallicFactor));
+                assignment.normalStrength = static_cast<float>(JsonNumberOr(materialValue, "normalStrength", assignment.normalStrength));
+                assignment.flipNormalGreen = JsonBoolOr(materialValue, "flipNormalGreen", assignment.flipNormalGreen);
+                const JsonValue* textures = FindMember(materialValue, "textures");
+                if (textures && textures->type == JsonValue::Type::Object)
+                {
+                    for (std::size_t textureSlot = 0; textureSlot < MaterialTextureSlotCount; ++textureSlot)
+                    {
+                        const JsonValue* textureValue = FindMember(*textures, TextureSlotJsonNames[textureSlot]);
+                        if (textureValue && textureValue->type == JsonValue::Type::Object)
+                        {
+                            assignment.textureOverrideEnabled[textureSlot] = JsonBoolOr(*textureValue, "override", false);
+                            assignment.textureOverrides[textureSlot] = Utf8ToWide(JsonStringOr(*textureValue, "path"));
+                        }
+                    }
+                }
+                if (!assignment.materialName.empty())
+                {
+                    loadedProject.materialAssignments.push_back(assignment);
+                }
+            }
+        }
+
+        std::string sceneLoadDiagnostics;
+        std::vector<MaterialAssignment> importedAssignments;
+        if (!loadedProject.scenePath.empty())
+        {
+            LoadScenePath(loadedProject.scenePath, false);
+            sceneLoadDiagnostics = m_sceneDiagnostics;
+            importedAssignments = m_project.materialAssignments;
+        }
+
+        m_project = loadedProject;
+        if (m_project.materialAssignments.empty())
+        {
+            m_project.materialAssignments = importedAssignments;
+        }
+        if (m_project.materialAssignments.empty())
+        {
+            m_project.materialAssignments.push_back({ "Default Material", m_project.shaderSets.front().name });
+        }
+        m_backend.SetSkyColors(m_project.skyTopColor, m_project.skyHorizonColor);
+        m_backend.SetMaterialAssignments(m_project.materialAssignments);
+        ApplyMaterialTextureOverrides(m_project.materialAssignments);
+
+        m_activeShaderSetIndex = 0;
+        for (std::size_t i = 0; i < m_project.shaderSets.size(); ++i)
+        {
+            if (m_project.shaderSets[i].name == activeShaderSetName)
+            {
+                m_activeShaderSetIndex = i;
+                break;
+            }
+        }
+        m_activeShaderSet = m_project.shaderSets[m_activeShaderSetIndex];
+        std::fill(m_shaderTextBuffer.begin(), m_shaderTextBuffer.end(), '\0');
+        const std::size_t copySize = std::min(m_activeShaderSet.sourceText.size(), m_shaderTextBuffer.size() - 1);
+        std::memcpy(m_shaderTextBuffer.data(), m_activeShaderSet.sourceText.data(), copySize);
+        m_shaderDirty = false;
+        m_shaderSetSerial = static_cast<std::uint32_t>(m_project.shaderSets.size() + 1);
+
+        std::ostringstream diagnostics;
+        bool activeCompileSucceeded = false;
+        for (std::size_t i = 0; i < m_project.shaderSets.size(); ++i)
+        {
+            if (i == m_activeShaderSetIndex)
+            {
+                continue;
+            }
+
+            std::string shaderDiagnostics;
+            CompileShaderSet(m_project.shaderSets[i], nullptr, nullptr, shaderDiagnostics);
+            diagnostics << shaderDiagnostics << "\n\n";
+        }
+
+        std::string activeDiagnostics;
+        activeCompileSucceeded = CompileShaderSet(m_project.shaderSets[m_activeShaderSetIndex], &m_activeVertexShader, &m_activePixelShader, activeDiagnostics);
+        diagnostics << activeDiagnostics;
+
+        m_lastCompileSucceeded = activeCompileSucceeded;
+        m_compileDiagnostics = diagnostics.str();
+        m_sceneDiagnostics = "Loaded project from " + path.string();
+        if (!sceneLoadDiagnostics.empty())
+        {
+            m_sceneDiagnostics += "\n" + sceneLoadDiagnostics;
+        }
+        AddRecentProject(path);
+        SetProjectDirty(false);
+    }
+    catch (const std::exception& ex)
+    {
+        m_sceneDiagnostics = "Project load failed: " + std::string(ex.what());
+    }
+}
+
+std::filesystem::path RenderBuilderApp::OpenFileDialog(const wchar_t* filter) const
+{
+    wchar_t fileName[MAX_PATH] = {};
+    OPENFILENAMEW openFile = {};
+    openFile.lStructSize = sizeof(openFile);
+    openFile.hwndOwner = m_hwnd;
+    openFile.lpstrFilter = filter;
+    openFile.lpstrFile = fileName;
+    openFile.nMaxFile = MAX_PATH;
+    openFile.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (GetOpenFileNameW(&openFile))
+    {
+        return std::filesystem::path(fileName);
+    }
+    return {};
+}
+
+std::filesystem::path RenderBuilderApp::SaveFileDialog(const wchar_t* filter, const wchar_t* defaultExtension) const
+{
+    wchar_t fileName[MAX_PATH] = {};
+    if (!m_project.path.empty())
+    {
+        wcsncpy_s(fileName, std::filesystem::path(m_project.path).filename().wstring().c_str(), _TRUNCATE);
+    }
+    else
+    {
+        wcsncpy_s(fileName, L"Untitled.renderbuilder.json", _TRUNCATE);
+    }
+
+    OPENFILENAMEW saveFile = {};
+    saveFile.lStructSize = sizeof(saveFile);
+    saveFile.hwndOwner = m_hwnd;
+    saveFile.lpstrFilter = filter;
+    saveFile.lpstrFile = fileName;
+    saveFile.nMaxFile = MAX_PATH;
+    saveFile.lpstrDefExt = defaultExtension;
+    saveFile.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+    if (GetSaveFileNameW(&saveFile))
+    {
+        return std::filesystem::path(fileName);
+    }
+    return {};
+}
+
+LRESULT CALLBACK RenderBuilderApp::WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
+{
+    if (ImGui_ImplWin32_WndProcHandler(hwnd, message, wparam, lparam))
+    {
+        return true;
+    }
+
+    RenderBuilderApp* app = nullptr;
+    if (message == WM_NCCREATE)
+    {
+        auto* createStruct = reinterpret_cast<CREATESTRUCTW*>(lparam);
+        app = static_cast<RenderBuilderApp*>(createStruct->lpCreateParams);
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
+    }
+    else
+    {
+        app = reinterpret_cast<RenderBuilderApp*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
+    }
+
+    if (app)
+    {
+        return app->HandleMessage(hwnd, message, wparam, lparam);
+    }
+    return DefWindowProc(hwnd, message, wparam, lparam);
+}
+
+LRESULT RenderBuilderApp::HandleMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
+{
+    switch (message)
+    {
+    case WM_ENTERSIZEMOVE:
+        m_inSizeMove = true;
+        SetTimer(hwnd, ResizeMoveTimerId, 16, nullptr);
+        return 0;
+    case WM_EXITSIZEMOVE:
+        m_inSizeMove = false;
+        KillTimer(hwnd, ResizeMoveTimerId);
+        ApplyPendingResize();
+        ApplyPendingSceneTargetResize();
+        return 0;
+    case WM_SIZE:
+        m_windowWidth = LOWORD(lparam);
+        m_windowHeight = HIWORD(lparam);
+        if (wparam == SIZE_MINIMIZED)
+        {
+            m_minimized = true;
+            return 0;
+        }
+        m_minimized = false;
+        if (m_windowWidth > 0 && m_windowHeight > 0)
+        {
+            RequestResize(m_windowWidth, m_windowHeight);
+        }
+        return 0;
+    case WM_TIMER:
+        if (wparam == ResizeMoveTimerId && m_inSizeMove && !m_minimized)
+        {
+            Tick();
+            return 0;
+        }
+        return 0;
+    case WM_DESTROY:
+        KillTimer(hwnd, ResizeMoveTimerId);
+        PostQuitMessage(0);
+        return 0;
+    default:
+        return DefWindowProc(hwnd, message, wparam, lparam);
+    }
+}
+}

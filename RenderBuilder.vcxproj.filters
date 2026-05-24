@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source">
+      <UniqueIdentifier>{6CB2C2E9-E9F0-44AE-B830-383CBDBC6377}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders">
+      <UniqueIdentifier>{B2DC5B32-3FED-45C5-9563-063D371A61D0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Build">
+      <UniqueIdentifier>{92ED221D-7647-4E7F-AD15-48A2FEAE27B1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ThirdParty\imgui">
+      <UniqueIdentifier>{CE17264F-C6C6-41F3-8184-D6253DB8E2B5}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Source\D3D12Backend.cpp"><Filter>Source</Filter></ClCompile>
+    <ClCompile Include="Source\Main.cpp"><Filter>Source</Filter></ClCompile>
+    <ClCompile Include="Source\RenderBuilderApp.cpp"><Filter>Source</Filter></ClCompile>
+    <ClCompile Include="Source\SceneImporter.cpp"><Filter>Source</Filter></ClCompile>
+    <ClCompile Include="Source\ShaderCompiler.cpp"><Filter>Source</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\imgui\imgui.cpp"><Filter>ThirdParty\imgui</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\imgui\imgui_draw.cpp"><Filter>ThirdParty\imgui</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\imgui\imgui_tables.cpp"><Filter>ThirdParty\imgui</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\imgui\imgui_widgets.cpp"><Filter>ThirdParty\imgui</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\imgui\backends\imgui_impl_dx12.cpp"><Filter>ThirdParty\imgui</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\imgui\backends\imgui_impl_win32.cpp"><Filter>ThirdParty\imgui</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Source\D3D12Backend.h"><Filter>Source</Filter></ClInclude>
+    <ClInclude Include="Source\EditorTypes.h"><Filter>Source</Filter></ClInclude>
+    <ClInclude Include="Source\RenderBuilderApp.h"><Filter>Source</Filter></ClInclude>
+    <ClInclude Include="Source\SceneImporter.h"><Filter>Source</Filter></ClInclude>
+    <ClInclude Include="Source\SceneTypes.h"><Filter>Source</Filter></ClInclude>
+    <ClInclude Include="Source\ShaderCompiler.h"><Filter>Source</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="BuildThirdParty.ps1"><Filter>Build</Filter></None>
+    <None Include="Shaders\DefaultRaster.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\RenderBuilderShaderABI.hlsli"><Filter>Shaders</Filter></None>
+  </ItemGroup>
+</Project>
