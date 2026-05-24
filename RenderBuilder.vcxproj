@@ -115,6 +115,7 @@
   <ItemGroup>
     <None Include="BuildThirdParty.ps1" />
     <None Include="Shaders\DefaultRaster.hlsl" />
+    <None Include="Shaders\LookDevPBR.hlsl" />
     <None Include="Shaders\RenderBuilderShaderABI.hlsli" />
   </ItemGroup>
   <ItemGroup>

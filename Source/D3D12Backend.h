@@ -45,7 +45,15 @@ public:
     bool UpdateMaterialTextureSlot(const std::string& materialName, std::uint32_t textureSlot, const std::wstring& path, std::string& diagnostics);
     void ResizeSceneTarget(UINT width, UINT height);
     void SetSkyColors(const std::array<float, 4>& topColor, const std::array<float, 4>& horizonColor);
+    void SetLookDevEnvironment(const LookDevEnvironment& environment);
+    void SetLookDevViewSettings(const LookDevViewSettings& viewSettings);
+    bool UpdateEnvironmentTexture(const std::wstring& path, std::string& diagnostics);
+    void SetDebugViewMode(LookDevDisplayMode displayMode);
+    bool SaveSceneSnapshot(const std::wstring& path, std::string& diagnostics);
+    void ResetPreviewScene();
     void ResetCameraToScene();
+    ViewportCamera CameraState() const;
+    void SetCameraState(const ViewportCamera& camera);
     void OrbitCamera(float yawDeltaRadians, float pitchDeltaRadians);
     void PanCamera(float rightDelta, float upDelta);
     void DollyCamera(float wheelDelta);
@@ -64,12 +72,15 @@ public:
     UINT IndexCount() const { return m_indexCount; }
     UINT VertexCount() const { return m_vertexCount; }
     bool HasValidPipeline() const { return m_pipelineState != nullptr; }
+    bool HasEnvironmentTexture() const { return m_hasEnvironmentTexture; }
+    std::string EnvironmentStatus() const { return m_environmentStatus; }
 
 private:
     struct SceneConstants
     {
         DirectX::XMFLOAT4X4 modelViewProjection;
         DirectX::XMFLOAT4X4 model;
+        DirectX::XMFLOAT4X4 viewProjectionInverse;
         DirectX::XMFLOAT4 cameraPositionTime;
         DirectX::XMFLOAT4 lightDirectionIntensity;
     };
@@ -82,7 +93,20 @@ private:
         float normalGreenScale = 1.0f;
         float roughnessFactor = 0.48f;
         float metallicFactor = 0.0f;
-        DirectX::XMFLOAT3 padding = DirectX::XMFLOAT3(0.0f, 0.0f, 0.0f);
+        float occlusionStrength = 1.0f;
+        float alphaCutoff = 0.5f;
+        float alphaMode = 0.0f;
+        DirectX::XMFLOAT4 emissiveFactor = DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f);
+    };
+
+    struct LookDevConstants
+    {
+        DirectX::XMFLOAT4 sunColorIntensity = DirectX::XMFLOAT4(1.0f, 0.96f, 0.88f, 1.2f);
+        DirectX::XMFLOAT4 environmentOptions = DirectX::XMFLOAT4(0.0f, 1.0f, 0.0f, 0.0f);
+        DirectX::XMFLOAT4 viewOptions = DirectX::XMFLOAT4(0.0f, 2.2f, 2.0f, 0.0f);
+        DirectX::XMFLOAT4 iblOptions = DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+        DirectX::XMFLOAT4 skyTopColor = DirectX::XMFLOAT4(0.12f, 0.22f, 0.36f, 1.0f);
+        DirectX::XMFLOAT4 skyHorizonColor = DirectX::XMFLOAT4(0.035f, 0.045f, 0.055f, 1.0f);
     };
 
     struct SkyConstants
@@ -95,7 +119,7 @@ private:
     {
         std::string name = "Default Material";
         std::string shaderSetName = "Default Raster Shader";
-        std::array<std::wstring, 4> texturePaths;
+        std::array<std::wstring, static_cast<std::size_t>(TextureSlot::Count)> texturePaths;
         MaterialConstants constants;
         D3D12_GPU_DESCRIPTOR_HANDLE textureTableGpu = {};
     };
@@ -120,6 +144,7 @@ private:
     void CreateMeshBuffers(const std::vector<SceneVertex>& vertices, const std::vector<std::uint32_t>& indices);
     void CreateDefaultMaterialResources();
     bool CreateMaterialTexture(const std::wstring& path, UINT descriptorIndex, Microsoft::WRL::ComPtr<ID3D12Resource>& texture, std::string& diagnostics);
+    bool CreateTextureFromFile(const std::wstring& path, UINT descriptorIndex, Microsoft::WRL::ComPtr<ID3D12Resource>& texture, std::string& diagnostics);
     void CreateFallbackTexture();
     void CreateFallbackSrv(UINT descriptorIndex);
     void UploadTextureSubresources(ID3D12Resource* texture, const std::vector<D3D12_SUBRESOURCE_DATA>& subresources);
@@ -147,7 +172,7 @@ private:
     UINT m_sceneWidth = 1280;
     UINT m_sceneHeight = 720;
     DXGI_FORMAT m_backBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-    DXGI_FORMAT m_sceneFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+    DXGI_FORMAT m_sceneFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
     DXGI_FORMAT m_sceneDepthFormat = DXGI_FORMAT_D32_FLOAT;
 
     Microsoft::WRL::ComPtr<IDXGIFactory6> m_factory;
@@ -176,7 +201,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_sceneTarget;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_sceneDepth;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_fallbackTexture;
-    std::vector<std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 4>> m_materialTextures;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_environmentTexture;
+    std::vector<std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, static_cast<std::size_t>(TextureSlot::Count)>> m_materialTextures;
     std::vector<RenderMaterial> m_materials;
     std::vector<SceneDraw> m_draws;
     D3D12_VERTEX_BUFFER_VIEW m_vertexBufferView = {};
@@ -203,5 +229,11 @@ private:
     UINT64 m_frameNumber = 0;
     bool m_imguiInitialized = false;
     SkyConstants m_skyConstants;
+    LookDevEnvironment m_lookDevEnvironment;
+    LookDevViewSettings m_lookDevViewSettings;
+    LookDevConstants m_lookDevConstants;
+    bool m_hasEnvironmentTexture = false;
+    UINT m_environmentMipLevels = 1;
+    std::string m_environmentStatus = "Using SkyColor background.";
 };
 }

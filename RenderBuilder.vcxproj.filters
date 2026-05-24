@@ -38,6 +38,7 @@
   <ItemGroup>
     <None Include="BuildThirdParty.ps1"><Filter>Build</Filter></None>
     <None Include="Shaders\DefaultRaster.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\LookDevPBR.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\RenderBuilderShaderABI.hlsli"><Filter>Shaders</Filter></None>
   </ItemGroup>
 </Project>

@@ -16,6 +16,7 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <system_error>
 #include <unordered_map>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
@@ -24,13 +25,15 @@ namespace
 {
 constexpr std::size_t ShaderBufferSize = 256 * 1024;
 constexpr UINT_PTR ResizeMoveTimerId = 1;
-constexpr std::size_t MaterialTextureSlotCount = 4;
+constexpr std::size_t MaterialTextureSlotCount = static_cast<std::size_t>(rb::TextureSlot::Count);
 constexpr const char* TextureSlotLabels[MaterialTextureSlotCount] =
 {
     "Base Color",
     "Normal",
     "Roughness",
     "Metallic",
+    "Occlusion",
+    "Emissive",
 };
 constexpr const char* TextureSlotJsonNames[MaterialTextureSlotCount] =
 {
@@ -38,8 +41,13 @@ constexpr const char* TextureSlotJsonNames[MaterialTextureSlotCount] =
     "normal",
     "roughness",
     "metallic",
+    "occlusion",
+    "emissive",
 };
 constexpr const wchar_t* TextureFileFilter = L"Texture Files\0*.dds;*.tga;*.hdr;*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff\0All Files\0*.*\0";
+constexpr const wchar_t* EnvironmentFileFilter = L"Environment Files\0*.hdr;*.dds;*.exr;*.png;*.jpg;*.jpeg\0All Files\0*.*\0";
+constexpr const char* LookDevShaderSetName = "LookDev PBR";
+constexpr const char* DefaultRasterShaderSetName = "Default Raster Shader";
 
 std::wstring Utf8ToWide(const std::string& text)
 {
@@ -123,8 +131,232 @@ std::wstring SceneTexturePath(const rb::SceneMaterial& material, std::size_t tex
     case 1: return material.normalTexturePath;
     case 2: return material.roughnessTexturePath;
     case 3: return material.metallicTexturePath;
+    case 4: return material.occlusionTexturePath;
+    case 5: return material.emissiveTexturePath;
     default: return {};
     }
+}
+
+const char* AlphaModeName(rb::AlphaMode mode)
+{
+    switch (mode)
+    {
+    case rb::AlphaMode::Opaque: return "Opaque";
+    case rb::AlphaMode::Mask: return "Mask";
+    case rb::AlphaMode::Blend: return "Blend";
+    default: return "Opaque";
+    }
+}
+
+const char* BackgroundModeName(rb::LookDevBackgroundMode mode)
+{
+    switch (mode)
+    {
+    case rb::LookDevBackgroundMode::SkyColor: return "SkyColor";
+    case rb::LookDevBackgroundMode::Hdri: return "HDRI Background";
+    case rb::LookDevBackgroundMode::TransparentChecker: return "Transparent Checker";
+    default: return "SkyColor";
+    }
+}
+
+const char* ToneMapperName(rb::ToneMapper toneMapper)
+{
+    switch (toneMapper)
+    {
+    case rb::ToneMapper::None: return "None";
+    case rb::ToneMapper::Reinhard: return "Reinhard";
+    case rb::ToneMapper::Aces: return "ACES";
+    default: return "ACES";
+    }
+}
+
+const char* DisplayModeName(rb::LookDevDisplayMode mode)
+{
+    switch (mode)
+    {
+    case rb::LookDevDisplayMode::Beauty: return "Beauty";
+    case rb::LookDevDisplayMode::BaseColor: return "BaseColor";
+    case rb::LookDevDisplayMode::Normal: return "Normal";
+    case rb::LookDevDisplayMode::Roughness: return "Roughness";
+    case rb::LookDevDisplayMode::Metallic: return "Metallic";
+    case rb::LookDevDisplayMode::AmbientOcclusion: return "AO";
+    case rb::LookDevDisplayMode::Emissive: return "Emissive";
+    case rb::LookDevDisplayMode::LightingOnly: return "LightingOnly";
+    default: return "Beauty";
+    }
+}
+
+std::string AlphaModeJsonName(rb::AlphaMode mode)
+{
+    switch (mode)
+    {
+    case rb::AlphaMode::Mask: return "Mask";
+    case rb::AlphaMode::Blend: return "Blend";
+    case rb::AlphaMode::Opaque:
+    default:
+        return "Opaque";
+    }
+}
+
+std::string BackgroundModeJsonName(rb::LookDevBackgroundMode mode)
+{
+    switch (mode)
+    {
+    case rb::LookDevBackgroundMode::Hdri: return "Hdri";
+    case rb::LookDevBackgroundMode::TransparentChecker: return "TransparentChecker";
+    case rb::LookDevBackgroundMode::SkyColor:
+    default:
+        return "SkyColor";
+    }
+}
+
+std::string ToneMapperJsonName(rb::ToneMapper toneMapper)
+{
+    switch (toneMapper)
+    {
+    case rb::ToneMapper::None: return "None";
+    case rb::ToneMapper::Reinhard: return "Reinhard";
+    case rb::ToneMapper::Aces:
+    default:
+        return "Aces";
+    }
+}
+
+std::string DisplayModeJsonName(rb::LookDevDisplayMode mode)
+{
+    switch (mode)
+    {
+    case rb::LookDevDisplayMode::BaseColor: return "BaseColor";
+    case rb::LookDevDisplayMode::Normal: return "Normal";
+    case rb::LookDevDisplayMode::Roughness: return "Roughness";
+    case rb::LookDevDisplayMode::Metallic: return "Metallic";
+    case rb::LookDevDisplayMode::AmbientOcclusion: return "AmbientOcclusion";
+    case rb::LookDevDisplayMode::Emissive: return "Emissive";
+    case rb::LookDevDisplayMode::LightingOnly: return "LightingOnly";
+    case rb::LookDevDisplayMode::Beauty:
+    default:
+        return "Beauty";
+    }
+}
+
+rb::AlphaMode AlphaModeFromJson(const std::string& text, rb::AlphaMode fallback)
+{
+    if (text == "Mask") { return rb::AlphaMode::Mask; }
+    if (text == "Blend") { return rb::AlphaMode::Blend; }
+    if (text == "Opaque") { return rb::AlphaMode::Opaque; }
+    return fallback;
+}
+
+rb::LookDevBackgroundMode BackgroundModeFromJson(const std::string& text, rb::LookDevBackgroundMode fallback)
+{
+    if (text == "Hdri" || text == "HDRI") { return rb::LookDevBackgroundMode::Hdri; }
+    if (text == "TransparentChecker") { return rb::LookDevBackgroundMode::TransparentChecker; }
+    if (text == "SkyColor") { return rb::LookDevBackgroundMode::SkyColor; }
+    return fallback;
+}
+
+rb::ToneMapper ToneMapperFromJson(const std::string& text, rb::ToneMapper fallback)
+{
+    if (text == "None") { return rb::ToneMapper::None; }
+    if (text == "Reinhard") { return rb::ToneMapper::Reinhard; }
+    if (text == "Aces" || text == "ACES") { return rb::ToneMapper::Aces; }
+    return fallback;
+}
+
+rb::LookDevDisplayMode DisplayModeFromJson(const std::string& text, rb::LookDevDisplayMode fallback)
+{
+    if (text == "BaseColor") { return rb::LookDevDisplayMode::BaseColor; }
+    if (text == "Normal") { return rb::LookDevDisplayMode::Normal; }
+    if (text == "Roughness") { return rb::LookDevDisplayMode::Roughness; }
+    if (text == "Metallic") { return rb::LookDevDisplayMode::Metallic; }
+    if (text == "AmbientOcclusion" || text == "AO") { return rb::LookDevDisplayMode::AmbientOcclusion; }
+    if (text == "Emissive") { return rb::LookDevDisplayMode::Emissive; }
+    if (text == "LightingOnly") { return rb::LookDevDisplayMode::LightingOnly; }
+    if (text == "Beauty") { return rb::LookDevDisplayMode::Beauty; }
+    return fallback;
+}
+
+bool PathExists(const std::filesystem::path& path)
+{
+    if (path.empty())
+    {
+        return false;
+    }
+
+    std::error_code ec;
+    return std::filesystem::exists(path, ec);
+}
+
+std::filesystem::path AbsoluteLexicalPath(const std::filesystem::path& path)
+{
+    if (path.empty())
+    {
+        return {};
+    }
+
+    std::error_code ec;
+    std::filesystem::path absolutePath = path.is_absolute() ? path : std::filesystem::absolute(path, ec);
+    if (ec)
+    {
+        absolutePath = path;
+    }
+    return absolutePath.lexically_normal();
+}
+
+std::filesystem::path ResolveProjectPath(const std::string& jsonPath, const std::filesystem::path& projectDirectory)
+{
+    if (jsonPath.empty())
+    {
+        return {};
+    }
+
+    std::filesystem::path path(Utf8ToWide(jsonPath));
+    if (path.is_relative() && !projectDirectory.empty())
+    {
+        path = projectDirectory / path;
+    }
+    return path.lexically_normal();
+}
+
+std::wstring PathForProjectJson(const std::wstring& storedPath, const std::filesystem::path& projectDirectory)
+{
+    if (storedPath.empty())
+    {
+        return {};
+    }
+
+    std::filesystem::path path(storedPath);
+    if (!path.is_absolute() && !projectDirectory.empty())
+    {
+        path = projectDirectory / path;
+    }
+    path = path.lexically_normal();
+
+    if (!projectDirectory.empty())
+    {
+        const std::filesystem::path base = projectDirectory.lexically_normal();
+        const std::filesystem::path relativePath = path.lexically_relative(base);
+        if (!relativePath.empty())
+        {
+            return relativePath.generic_wstring();
+        }
+    }
+    return path.generic_wstring();
+}
+
+std::string JsonPathString(const std::wstring& storedPath, const std::filesystem::path& projectDirectory)
+{
+    return WideToUtf8(PathForProjectJson(storedPath, projectDirectory));
+}
+
+void AppendMissingAssetDiagnostic(std::ostringstream& diagnostics, const std::string& label, const std::filesystem::path& path)
+{
+    if (path.empty() || PathExists(path))
+    {
+        return;
+    }
+
+    diagnostics << "\nMissing " << label << ": " << path.string();
 }
 
 struct JsonValue
@@ -445,6 +677,26 @@ std::array<float, 4> JsonFloat4Or(const JsonValue& value, const char* name, cons
     }
     return result;
 }
+
+std::array<float, 3> JsonFloat3Or(const JsonValue& value, const char* name, const std::array<float, 3>& fallback)
+{
+    const JsonValue* member = FindMember(value, name);
+    if (!member || member->type != JsonValue::Type::Array || member->array.size() < 3)
+    {
+        return fallback;
+    }
+
+    std::array<float, 3> result = fallback;
+    for (std::size_t i = 0; i < result.size(); ++i)
+    {
+        if (member->array[i].type != JsonValue::Type::Number)
+        {
+            return fallback;
+        }
+        result[i] = static_cast<float>(member->array[i].number);
+    }
+    return result;
+}
 }
 
 namespace rb
@@ -582,18 +834,30 @@ std::filesystem::path RenderBuilderApp::FindRootDirectory() const
 
 void RenderBuilderApp::LoadDefaultShader()
 {
-    const std::filesystem::path shaderPath = m_rootDirectory / "Shaders" / "DefaultRaster.hlsl";
+    const std::filesystem::path shaderPath = m_rootDirectory / "Shaders" / "LookDevPBR.hlsl";
     LoadShaderFromDisk(shaderPath);
-    m_activeShaderSet.name = "Default Raster Shader";
+    m_activeShaderSet.name = LookDevShaderSetName;
     m_activeShaderSet.vertexEntry = L"VSMain";
     m_activeShaderSet.pixelEntry = L"PSMain";
     m_activeShaderSet.vertexProfile = L"vs_6_9";
     m_activeShaderSet.pixelProfile = L"ps_6_9";
 
-    m_project.shaderSets = { m_activeShaderSet };
+    ShaderSet defaultRasterSet;
+    defaultRasterSet.name = DefaultRasterShaderSetName;
+    defaultRasterSet.sourcePath = (m_rootDirectory / "Shaders" / "DefaultRaster.hlsl").wstring();
+    defaultRasterSet.sourceText = ReadTextFile(defaultRasterSet.sourcePath);
+    defaultRasterSet.vertexEntry = L"VSMain";
+    defaultRasterSet.pixelEntry = L"PSMain";
+    defaultRasterSet.vertexProfile = L"vs_6_9";
+    defaultRasterSet.pixelProfile = L"ps_6_9";
+
+    m_project.shaderSets = { m_activeShaderSet, defaultRasterSet };
     m_project.materialAssignments = { { "Default Material", m_activeShaderSet.name } };
     m_activeShaderSetIndex = 0;
+    m_shaderSetSerial = 3;
     m_backend.SetSkyColors(m_project.skyTopColor, m_project.skyHorizonColor);
+    m_backend.SetLookDevEnvironment(m_project.lookDevEnvironment);
+    m_backend.SetLookDevViewSettings(m_project.lookDevViewSettings);
 }
 
 void RenderBuilderApp::UpdateWindowTitle() const
@@ -634,6 +898,15 @@ void RenderBuilderApp::SetProjectDirty(bool dirty)
 void RenderBuilderApp::MarkProjectDirty()
 {
     SetProjectDirty(true);
+}
+
+void RenderBuilderApp::ApplyLookDevSettings()
+{
+    m_project.skyTopColor[3] = 1.0f;
+    m_project.skyHorizonColor[3] = 1.0f;
+    m_backend.SetSkyColors(m_project.skyTopColor, m_project.skyHorizonColor);
+    m_backend.SetLookDevEnvironment(m_project.lookDevEnvironment);
+    m_backend.SetLookDevViewSettings(m_project.lookDevViewSettings);
 }
 
 void RenderBuilderApp::LoadShaderFromDisk(const std::filesystem::path& path)
@@ -718,6 +991,12 @@ void RenderBuilderApp::Tick()
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S))
     {
         SaveProject();
+    }
+    if (m_project.lookDevViewSettings.turntableEnabled)
+    {
+        m_backend.OrbitCamera(m_project.lookDevViewSettings.turntableSpeed * deltaSeconds, 0.0f);
+        m_project.viewportCamera = m_backend.CameraState();
+        m_project.hasViewportCamera = true;
     }
     DrawUi();
     m_backend.Render(deltaSeconds, m_activeVertexShader, m_activePixelShader);
@@ -899,21 +1178,25 @@ void RenderBuilderApp::HandleViewportCameraControls()
     const bool viewportHovered = ImGui::IsItemHovered();
     const bool viewportActive = ImGui::IsItemActive();
     const bool viewportFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+    bool cameraChanged = false;
 
     if (viewportHovered)
     {
         if (io.MouseWheel != 0.0f)
         {
             m_backend.DollyCamera(io.MouseWheel);
+            cameraChanged = true;
         }
 
         if (viewportActive && ImGui::IsMouseDragging(ImGuiMouseButton_Left))
         {
             m_backend.OrbitCamera(io.MouseDelta.x * 0.008f, -io.MouseDelta.y * 0.008f);
+            cameraChanged = true;
         }
         else if (viewportActive && (ImGui::IsMouseDragging(ImGuiMouseButton_Middle) || ImGui::IsMouseDragging(ImGuiMouseButton_Right)))
         {
             m_backend.PanCamera(io.MouseDelta.x * 0.002f, io.MouseDelta.y * 0.002f);
+            cameraChanged = true;
         }
     }
 
@@ -933,11 +1216,20 @@ void RenderBuilderApp::HandleViewportCameraControls()
         if (forward != 0.0f || right != 0.0f || up != 0.0f)
         {
             m_backend.MoveCamera(forward, right, up);
+            cameraChanged = true;
         }
         if (ImGui::IsKeyPressed(ImGuiKey_Home))
         {
             m_backend.ResetCameraToScene();
+            cameraChanged = true;
         }
+    }
+
+    if (cameraChanged)
+    {
+        m_project.viewportCamera = m_backend.CameraState();
+        m_project.hasViewportCamera = true;
+        MarkProjectDirty();
     }
 }
 
@@ -1039,6 +1331,20 @@ void RenderBuilderApp::DrawShaderEditorPanel()
         CompileActiveShader();
         MarkProjectDirty();
     }
+    ImGui::SameLine();
+    if (ImGui::Button("Reload LookDev PBR"))
+    {
+        const std::string activeName = m_activeShaderSet.name;
+        LoadShaderFromDisk(m_rootDirectory / "Shaders" / "LookDevPBR.hlsl");
+        m_activeShaderSet.name = activeName;
+        m_activeShaderSet.vertexEntry = L"VSMain";
+        m_activeShaderSet.pixelEntry = L"PSMain";
+        m_activeShaderSet.vertexProfile = L"vs_6_9";
+        m_activeShaderSet.pixelProfile = L"ps_6_9";
+        SynchronizeActiveShaderSet();
+        CompileActiveShader();
+        MarkProjectDirty();
+    }
 
     ImGuiInputTextFlags flags = ImGuiInputTextFlags_AllowTabInput;
     if (ImGui::InputTextMultiline("##ShaderSource", m_shaderTextBuffer.data(), m_shaderTextBuffer.size(), ImVec2(-FLT_MIN, -FLT_MIN), flags))
@@ -1090,6 +1396,31 @@ void RenderBuilderApp::DrawMaterialInspectorPanel()
             assignmentChanged = true;
         }
         if (ImGui::SliderFloat("Metallic Factor", &assignment.metallicFactor, 0.0f, 1.0f, "%.2f"))
+        {
+            assignmentChanged = true;
+        }
+        if (ImGui::SliderFloat("Occlusion Strength", &assignment.occlusionStrength, 0.0f, 1.0f, "%.2f"))
+        {
+            assignmentChanged = true;
+        }
+        ImGui::PopItemWidth();
+        if (ImGui::ColorEdit3("Emissive Color", assignment.emissiveFactor.data()))
+        {
+            assignmentChanged = true;
+        }
+        ImGui::PushItemWidth(180.0f);
+        if (ImGui::SliderFloat("Emissive Intensity", &assignment.emissiveFactor[3], 0.0f, 20.0f, "%.2f"))
+        {
+            assignmentChanged = true;
+        }
+        const char* alphaModes[] = { "Opaque", "Mask", "Blend" };
+        int alphaMode = static_cast<int>(assignment.alphaMode);
+        if (ImGui::Combo("Alpha Mode", &alphaMode, alphaModes, _countof(alphaModes)))
+        {
+            assignment.alphaMode = static_cast<AlphaMode>(alphaMode);
+            assignmentChanged = true;
+        }
+        if (assignment.alphaMode == AlphaMode::Mask && ImGui::SliderFloat("Alpha Cutoff", &assignment.alphaCutoff, 0.0f, 1.0f, "%.2f"))
         {
             assignmentChanged = true;
         }
@@ -1180,11 +1511,100 @@ void RenderBuilderApp::DrawAssetBrowserPanel()
     skyChanged |= ImGui::ColorEdit3("Sky Horizon", m_project.skyHorizonColor.data());
     if (skyChanged)
     {
-        m_project.skyTopColor[3] = 1.0f;
-        m_project.skyHorizonColor[3] = 1.0f;
-        m_backend.SetSkyColors(m_project.skyTopColor, m_project.skyHorizonColor);
+        ApplyLookDevSettings();
         MarkProjectDirty();
     }
+    ImGui::SeparatorText("Environment");
+    ImGui::Text("HDRI: %s", m_project.lookDevEnvironment.environmentPath.empty() ? "<none>" : TextureFileName(m_project.lookDevEnvironment.environmentPath).c_str());
+    if (ImGui::IsItemHovered() && !m_project.lookDevEnvironment.environmentPath.empty())
+    {
+        ImGui::SetTooltip("%s", WideToUtf8(m_project.lookDevEnvironment.environmentPath).c_str());
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Load HDRI..."))
+    {
+        const auto path = OpenFileDialog(EnvironmentFileFilter);
+        if (!path.empty())
+        {
+            std::string diagnostics;
+            if (m_backend.UpdateEnvironmentTexture(path.wstring(), diagnostics))
+            {
+                m_project.lookDevEnvironment.environmentPath = path.wstring();
+                if (m_project.lookDevEnvironment.backgroundMode == LookDevBackgroundMode::SkyColor)
+                {
+                    m_project.lookDevEnvironment.backgroundMode = LookDevBackgroundMode::Hdri;
+                }
+                ApplyLookDevSettings();
+                m_sceneDiagnostics = diagnostics;
+                MarkProjectDirty();
+            }
+            else
+            {
+                m_sceneDiagnostics = "Environment load failed: " + diagnostics;
+            }
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear HDRI"))
+    {
+        std::string diagnostics;
+        m_backend.UpdateEnvironmentTexture({}, diagnostics);
+        m_project.lookDevEnvironment.environmentPath.clear();
+        ApplyLookDevSettings();
+        m_sceneDiagnostics = diagnostics;
+        MarkProjectDirty();
+    }
+
+    const char* backgroundModes[] = { "SkyColor", "HDRI Background", "Transparent Checker" };
+    int backgroundMode = static_cast<int>(m_project.lookDevEnvironment.backgroundMode);
+    bool lookDevChanged = false;
+    if (ImGui::Combo("Background", &backgroundMode, backgroundModes, _countof(backgroundModes)))
+    {
+        m_project.lookDevEnvironment.backgroundMode = static_cast<LookDevBackgroundMode>(backgroundMode);
+        lookDevChanged = true;
+    }
+    ImGui::PushItemWidth(180.0f);
+    lookDevChanged |= ImGui::SliderAngle("HDRI Rotation", &m_project.lookDevEnvironment.rotationYaw, -180.0f, 180.0f);
+    lookDevChanged |= ImGui::SliderFloat("Environment Intensity", &m_project.lookDevEnvironment.intensity, 0.0f, 8.0f, "%.2f");
+    lookDevChanged |= ImGui::SliderFloat3("Sun Direction", m_project.lookDevEnvironment.sunDirection.data(), -1.0f, 1.0f, "%.2f");
+    lookDevChanged |= ImGui::ColorEdit3("Sun Color", m_project.lookDevEnvironment.sunColor.data());
+    lookDevChanged |= ImGui::SliderFloat("Sun Intensity", &m_project.lookDevEnvironment.sunIntensity, 0.0f, 10.0f, "%.2f");
+    lookDevChanged |= ImGui::SliderFloat("Exposure", &m_project.lookDevViewSettings.exposure, -8.0f, 8.0f, "%.2f EV");
+    lookDevChanged |= ImGui::SliderFloat("Gamma", &m_project.lookDevViewSettings.gamma, 1.0f, 3.0f, "%.2f");
+    ImGui::PopItemWidth();
+
+    const char* toneMappers[] = { "None", "Reinhard", "ACES" };
+    int toneMapper = static_cast<int>(m_project.lookDevViewSettings.toneMapper);
+    if (ImGui::Combo("Tone Mapper", &toneMapper, toneMappers, _countof(toneMappers)))
+    {
+        m_project.lookDevViewSettings.toneMapper = static_cast<ToneMapper>(toneMapper);
+        lookDevChanged = true;
+    }
+    const char* displayModes[] = { "Beauty", "BaseColor", "Normal", "Roughness", "Metallic", "AO", "Emissive", "LightingOnly" };
+    int displayMode = static_cast<int>(m_project.lookDevViewSettings.displayMode);
+    if (ImGui::Combo("Display Mode", &displayMode, displayModes, _countof(displayModes)))
+    {
+        m_project.lookDevViewSettings.displayMode = static_cast<LookDevDisplayMode>(displayMode);
+        m_backend.SetDebugViewMode(m_project.lookDevViewSettings.displayMode);
+        lookDevChanged = true;
+    }
+    if (ImGui::Checkbox("Turntable", &m_project.lookDevViewSettings.turntableEnabled))
+    {
+        lookDevChanged = true;
+    }
+    ImGui::SameLine();
+    ImGui::PushItemWidth(140.0f);
+    if (ImGui::SliderFloat("Speed", &m_project.lookDevViewSettings.turntableSpeed, -2.0f, 2.0f, "%.2f"))
+    {
+        lookDevChanged = true;
+    }
+    ImGui::PopItemWidth();
+    if (lookDevChanged)
+    {
+        ApplyLookDevSettings();
+        MarkProjectDirty();
+    }
+
     if (ImGui::Button("Load Scene..."))
     {
         const auto path = OpenFileDialog(L"Model Files\0*.gltf;*.glb;*.fbx;*.obj\0All Files\0*.*\0");
@@ -1207,6 +1627,11 @@ void RenderBuilderApp::DrawAssetBrowserPanel()
     if (ImGui::Button("Save As..."))
     {
         SaveProjectAs();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Snapshot..."))
+    {
+        SaveViewportSnapshot();
     }
     ImGui::Separator();
     ImGui::TextWrapped("%s", m_sceneDiagnostics.c_str());
@@ -1240,6 +1665,10 @@ void RenderBuilderApp::DrawStatsPanel()
     ImGui::Text("Preview target: %u x %u", m_backend.SceneWidth(), m_backend.SceneHeight());
     ImGui::Text("Vertex count: %u", m_backend.VertexCount());
     ImGui::Text("Index count: %u", m_backend.IndexCount());
+    ImGui::Text("Environment: %s", m_backend.HasEnvironmentTexture() ? "HDRI loaded" : "fallback");
+    ImGui::Text("Background: %s", BackgroundModeName(m_project.lookDevEnvironment.backgroundMode));
+    ImGui::Text("Exposure: %.2f EV", m_project.lookDevViewSettings.exposure);
+    ImGui::Text("Display: %s", DisplayModeName(m_project.lookDevViewSettings.displayMode));
     ImGui::Separator();
     ImGui::Text("SM 6.9: %s", caps.shaderModel69 ? "available" : "not reported");
     ImGui::Text("Mesh Shader: %s", caps.meshShader ? "available" : "disabled");
@@ -1309,20 +1738,20 @@ bool RenderBuilderApp::CompileShaderSet(ShaderSet& shaderSet, std::vector<std::u
     return false;
 }
 
-void RenderBuilderApp::LoadScenePath(const std::wstring& path, bool markDirty)
+bool RenderBuilderApp::LoadScenePath(const std::wstring& path, bool markDirty)
 {
     SceneImportResult result = m_sceneImporter.ImportScene(path);
     if (!result.succeeded)
     {
         m_sceneDiagnostics = result.diagnostics;
-        return;
+        return false;
     }
 
     std::string backendDiagnostics;
     if (!m_backend.LoadSceneMesh(result.scene, backendDiagnostics))
     {
         m_sceneDiagnostics = result.diagnostics + "\n" + backendDiagnostics;
-        return;
+        return false;
     }
 
     m_project.scenePath = path;
@@ -1345,6 +1774,16 @@ void RenderBuilderApp::LoadScenePath(const std::wstring& path, bool markDirty)
     {
         MarkProjectDirty();
     }
+    return true;
+}
+
+void RenderBuilderApp::UseDefaultScenePreview()
+{
+    m_backend.ResetPreviewScene();
+    m_sceneMaterials.clear();
+    m_sceneVertexCount = 24;
+    m_sceneIndexCount = 36;
+    m_sceneDrawCount = 1;
 }
 
 const SceneMaterial* RenderBuilderApp::FindSceneMaterial(const std::string& materialName) const
@@ -1393,7 +1832,7 @@ void RenderBuilderApp::ApplyMaterialTextureSlot(const MaterialAssignment& assign
     MarkProjectDirty();
 }
 
-void RenderBuilderApp::ApplyMaterialTextureOverrides(const std::vector<MaterialAssignment>& assignments)
+std::string RenderBuilderApp::ApplyMaterialTextureOverrides(const std::vector<MaterialAssignment>& assignments)
 {
     std::ostringstream diagnostics;
     for (const MaterialAssignment& assignment : assignments)
@@ -1417,11 +1856,7 @@ void RenderBuilderApp::ApplyMaterialTextureOverrides(const std::vector<MaterialA
             }
         }
     }
-    const std::string text = diagnostics.str();
-    if (!text.empty())
-    {
-        m_sceneDiagnostics += text;
-    }
+    return diagnostics.str();
 }
 
 void RenderBuilderApp::SaveProject()
@@ -1444,6 +1879,25 @@ void RenderBuilderApp::SaveProjectAs()
     SaveProjectToDisk(path);
 }
 
+void RenderBuilderApp::SaveViewportSnapshot()
+{
+    const auto path = SaveFileDialog(L"PNG Image\0*.png\0All Files\0*.*\0", L"png");
+    if (path.empty())
+    {
+        return;
+    }
+
+    std::string diagnostics;
+    if (m_backend.SaveSceneSnapshot(path.wstring(), diagnostics))
+    {
+        m_sceneDiagnostics = diagnostics;
+    }
+    else
+    {
+        m_sceneDiagnostics = "Snapshot export failed: " + diagnostics;
+    }
+}
+
 bool RenderBuilderApp::SaveProjectToDisk(const std::filesystem::path& requestedPath)
 {
     try
@@ -1454,6 +1908,10 @@ bool RenderBuilderApp::SaveProjectToDisk(const std::filesystem::path& requestedP
         {
             path += L".renderbuilder.json";
         }
+        path = AbsoluteLexicalPath(path);
+        const std::filesystem::path projectDirectory = path.parent_path();
+        m_project.viewportCamera = m_backend.CameraState();
+        m_project.hasViewportCamera = true;
 
         const std::filesystem::path parent = path.parent_path();
         if (!parent.empty())
@@ -1464,7 +1922,7 @@ bool RenderBuilderApp::SaveProjectToDisk(const std::filesystem::path& requestedP
         std::ostringstream json;
         json << "{\n";
         json << "  \"backend\": \"D3D12\",\n";
-        json << "  \"scenePath\": \"" << EscapeJson(WideToUtf8(m_project.scenePath)) << "\",\n";
+        json << "  \"scenePath\": \"" << EscapeJson(JsonPathString(m_project.scenePath, projectDirectory)) << "\",\n";
         json << "  \"skyTopColor\": ["
              << m_project.skyTopColor[0] << ", "
              << m_project.skyTopColor[1] << ", "
@@ -1475,7 +1933,36 @@ bool RenderBuilderApp::SaveProjectToDisk(const std::filesystem::path& requestedP
              << m_project.skyHorizonColor[1] << ", "
              << m_project.skyHorizonColor[2] << ", "
              << m_project.skyHorizonColor[3] << "],\n";
-        json << "  \"shaderSourcePath\": \"" << EscapeJson(WideToUtf8(m_activeShaderSet.sourcePath)) << "\",\n";
+        json << "  \"viewportCamera\": { "
+             << "\"target\": ["
+             << m_project.viewportCamera.target[0] << ", "
+             << m_project.viewportCamera.target[1] << ", "
+             << m_project.viewportCamera.target[2] << "], "
+             << "\"yaw\": " << m_project.viewportCamera.yaw << ", "
+             << "\"pitch\": " << m_project.viewportCamera.pitch << ", "
+             << "\"distance\": " << m_project.viewportCamera.distance << " },\n";
+        json << "  \"lookDevEnvironment\": { "
+             << "\"environmentPath\": \"" << EscapeJson(JsonPathString(m_project.lookDevEnvironment.environmentPath, projectDirectory)) << "\", "
+             << "\"rotationYaw\": " << m_project.lookDevEnvironment.rotationYaw << ", "
+             << "\"intensity\": " << m_project.lookDevEnvironment.intensity << ", "
+             << "\"backgroundMode\": \"" << EscapeJson(BackgroundModeJsonName(m_project.lookDevEnvironment.backgroundMode)) << "\", "
+             << "\"sunDirection\": ["
+             << m_project.lookDevEnvironment.sunDirection[0] << ", "
+             << m_project.lookDevEnvironment.sunDirection[1] << ", "
+             << m_project.lookDevEnvironment.sunDirection[2] << "], "
+             << "\"sunColor\": ["
+             << m_project.lookDevEnvironment.sunColor[0] << ", "
+             << m_project.lookDevEnvironment.sunColor[1] << ", "
+             << m_project.lookDevEnvironment.sunColor[2] << "], "
+             << "\"sunIntensity\": " << m_project.lookDevEnvironment.sunIntensity << " },\n";
+        json << "  \"lookDevViewSettings\": { "
+             << "\"exposure\": " << m_project.lookDevViewSettings.exposure << ", "
+             << "\"toneMapper\": \"" << EscapeJson(ToneMapperJsonName(m_project.lookDevViewSettings.toneMapper)) << "\", "
+             << "\"gamma\": " << m_project.lookDevViewSettings.gamma << ", "
+             << "\"displayMode\": \"" << EscapeJson(DisplayModeJsonName(m_project.lookDevViewSettings.displayMode)) << "\", "
+             << "\"turntableEnabled\": " << (m_project.lookDevViewSettings.turntableEnabled ? "true" : "false") << ", "
+             << "\"turntableSpeed\": " << m_project.lookDevViewSettings.turntableSpeed << " },\n";
+        json << "  \"shaderSourcePath\": \"" << EscapeJson(JsonPathString(m_activeShaderSet.sourcePath, projectDirectory)) << "\",\n";
         json << "  \"vertexEntry\": \"" << EscapeJson(WideToUtf8(m_activeShaderSet.vertexEntry)) << "\",\n";
         json << "  \"pixelEntry\": \"" << EscapeJson(WideToUtf8(m_activeShaderSet.pixelEntry)) << "\",\n";
         json << "  \"pipelineKind\": \"RasterVSPS\",\n";
@@ -1486,7 +1973,7 @@ bool RenderBuilderApp::SaveProjectToDisk(const std::filesystem::path& requestedP
             const ShaderSet& shaderSet = m_project.shaderSets[i];
             json << "    { "
                  << "\"name\": \"" << EscapeJson(shaderSet.name) << "\", "
-                 << "\"sourcePath\": \"" << EscapeJson(WideToUtf8(shaderSet.sourcePath)) << "\", "
+                 << "\"sourcePath\": \"" << EscapeJson(JsonPathString(shaderSet.sourcePath, projectDirectory)) << "\", "
                  << "\"sourceText\": \"" << EscapeJson(shaderSet.sourceText) << "\", "
                  << "\"vertexEntry\": \"" << EscapeJson(WideToUtf8(shaderSet.vertexEntry)) << "\", "
                  << "\"pixelEntry\": \"" << EscapeJson(WideToUtf8(shaderSet.pixelEntry)) << "\", "
@@ -1508,16 +1995,24 @@ bool RenderBuilderApp::SaveProjectToDisk(const std::filesystem::path& requestedP
                  << material.baseColorFactor[1] << ", "
                  << material.baseColorFactor[2] << ", "
                  << material.baseColorFactor[3] << "], "
+                 << "\"emissiveFactor\": ["
+                 << material.emissiveFactor[0] << ", "
+                 << material.emissiveFactor[1] << ", "
+                 << material.emissiveFactor[2] << ", "
+                 << material.emissiveFactor[3] << "], "
                  << "\"roughnessFactor\": " << material.roughnessFactor << ", "
                  << "\"metallicFactor\": " << material.metallicFactor << ", "
                  << "\"normalStrength\": " << material.normalStrength << ", "
+                 << "\"occlusionStrength\": " << material.occlusionStrength << ", "
+                 << "\"alphaMode\": \"" << EscapeJson(AlphaModeJsonName(material.alphaMode)) << "\", "
+                 << "\"alphaCutoff\": " << material.alphaCutoff << ", "
                  << "\"flipNormalGreen\": " << (material.flipNormalGreen ? "true" : "false") << ", "
                  << "\"textures\": { ";
             for (std::size_t textureSlot = 0; textureSlot < MaterialTextureSlotCount; ++textureSlot)
             {
                 json << "\"" << TextureSlotJsonNames[textureSlot] << "\": { "
                      << "\"override\": " << (material.textureOverrideEnabled[textureSlot] ? "true" : "false") << ", "
-                     << "\"path\": \"" << EscapeJson(WideToUtf8(material.textureOverrides[textureSlot])) << "\" }";
+                     << "\"path\": \"" << EscapeJson(JsonPathString(material.textureOverrides[textureSlot], projectDirectory)) << "\" }";
                 json << (textureSlot + 1 < MaterialTextureSlotCount ? ", " : "");
             }
             json << " } }";
@@ -1527,9 +2022,8 @@ bool RenderBuilderApp::SaveProjectToDisk(const std::filesystem::path& requestedP
         json << "}\n";
 
         WriteTextFile(path, json.str());
-        const std::filesystem::path normalizedPath = std::filesystem::absolute(path).lexically_normal();
-        m_project.path = normalizedPath.wstring();
-        AddRecentProject(normalizedPath);
+        m_project.path = path.wstring();
+        AddRecentProject(path);
         SetProjectDirty(false);
         m_sceneDiagnostics = "Saved project to " + path.string();
         return true;
@@ -1626,19 +2120,56 @@ void RenderBuilderApp::LoadProjectFromDisk(const std::filesystem::path& path)
 {
     try
     {
-        const JsonValue root = JsonParser(ReadTextFile(path)).Parse();
+        const std::filesystem::path projectPath = AbsoluteLexicalPath(path);
+        const std::filesystem::path projectDirectory = projectPath.parent_path();
+        const JsonValue root = JsonParser(ReadTextFile(projectPath)).Parse();
         if (root.type != JsonValue::Type::Object)
         {
             throw std::runtime_error("Project JSON root must be an object.");
         }
 
+        std::ostringstream assetDiagnostics;
         ProjectFile loadedProject;
-        loadedProject.path = std::filesystem::absolute(path).lexically_normal().wstring();
-        loadedProject.scenePath = Utf8ToWide(JsonStringOr(root, "scenePath"));
+        loadedProject.path = projectPath.wstring();
+        const std::filesystem::path scenePath = ResolveProjectPath(JsonStringOr(root, "scenePath"), projectDirectory);
+        loadedProject.scenePath = scenePath.wstring();
+        AppendMissingAssetDiagnostic(assetDiagnostics, "scene", scenePath);
         const std::array<float, 4> legacyClearColor = JsonFloat4Or(root, "viewportClearColor", loadedProject.skyHorizonColor);
         loadedProject.skyTopColor = JsonFloat4Or(root, "skyTopColor", loadedProject.skyTopColor);
         loadedProject.skyHorizonColor = JsonFloat4Or(root, "skyHorizonColor", legacyClearColor);
-        const std::string activeShaderSetName = JsonStringOr(root, "activeShaderSet", "Default Raster Shader");
+        const JsonValue* viewportCamera = FindMember(root, "viewportCamera");
+        if (viewportCamera && viewportCamera->type == JsonValue::Type::Object)
+        {
+            loadedProject.viewportCamera.target = JsonFloat3Or(*viewportCamera, "target", loadedProject.viewportCamera.target);
+            loadedProject.viewportCamera.yaw = static_cast<float>(JsonNumberOr(*viewportCamera, "yaw", loadedProject.viewportCamera.yaw));
+            loadedProject.viewportCamera.pitch = static_cast<float>(JsonNumberOr(*viewportCamera, "pitch", loadedProject.viewportCamera.pitch));
+            loadedProject.viewportCamera.distance = static_cast<float>(JsonNumberOr(*viewportCamera, "distance", loadedProject.viewportCamera.distance));
+            loadedProject.hasViewportCamera = true;
+        }
+        const JsonValue* lookDevEnvironment = FindMember(root, "lookDevEnvironment");
+        if (lookDevEnvironment && lookDevEnvironment->type == JsonValue::Type::Object)
+        {
+            const std::filesystem::path environmentPath = ResolveProjectPath(JsonStringOr(*lookDevEnvironment, "environmentPath"), projectDirectory);
+            loadedProject.lookDevEnvironment.environmentPath = environmentPath.wstring();
+            loadedProject.lookDevEnvironment.rotationYaw = static_cast<float>(JsonNumberOr(*lookDevEnvironment, "rotationYaw", loadedProject.lookDevEnvironment.rotationYaw));
+            loadedProject.lookDevEnvironment.intensity = static_cast<float>(JsonNumberOr(*lookDevEnvironment, "intensity", loadedProject.lookDevEnvironment.intensity));
+            loadedProject.lookDevEnvironment.backgroundMode = BackgroundModeFromJson(JsonStringOr(*lookDevEnvironment, "backgroundMode"), loadedProject.lookDevEnvironment.backgroundMode);
+            loadedProject.lookDevEnvironment.sunDirection = JsonFloat3Or(*lookDevEnvironment, "sunDirection", loadedProject.lookDevEnvironment.sunDirection);
+            loadedProject.lookDevEnvironment.sunColor = JsonFloat3Or(*lookDevEnvironment, "sunColor", loadedProject.lookDevEnvironment.sunColor);
+            loadedProject.lookDevEnvironment.sunIntensity = static_cast<float>(JsonNumberOr(*lookDevEnvironment, "sunIntensity", loadedProject.lookDevEnvironment.sunIntensity));
+            AppendMissingAssetDiagnostic(assetDiagnostics, "environment", environmentPath);
+        }
+        const JsonValue* lookDevViewSettings = FindMember(root, "lookDevViewSettings");
+        if (lookDevViewSettings && lookDevViewSettings->type == JsonValue::Type::Object)
+        {
+            loadedProject.lookDevViewSettings.exposure = static_cast<float>(JsonNumberOr(*lookDevViewSettings, "exposure", loadedProject.lookDevViewSettings.exposure));
+            loadedProject.lookDevViewSettings.toneMapper = ToneMapperFromJson(JsonStringOr(*lookDevViewSettings, "toneMapper"), loadedProject.lookDevViewSettings.toneMapper);
+            loadedProject.lookDevViewSettings.gamma = static_cast<float>(JsonNumberOr(*lookDevViewSettings, "gamma", loadedProject.lookDevViewSettings.gamma));
+            loadedProject.lookDevViewSettings.displayMode = DisplayModeFromJson(JsonStringOr(*lookDevViewSettings, "displayMode"), loadedProject.lookDevViewSettings.displayMode);
+            loadedProject.lookDevViewSettings.turntableEnabled = JsonBoolOr(*lookDevViewSettings, "turntableEnabled", loadedProject.lookDevViewSettings.turntableEnabled);
+            loadedProject.lookDevViewSettings.turntableSpeed = static_cast<float>(JsonNumberOr(*lookDevViewSettings, "turntableSpeed", loadedProject.lookDevViewSettings.turntableSpeed));
+        }
+        const std::string activeShaderSetName = JsonStringOr(root, "activeShaderSet", LookDevShaderSetName);
 
         const JsonValue* shaderSets = FindMember(root, "shaderSets");
         if (shaderSets && shaderSets->type == JsonValue::Type::Array)
@@ -1652,15 +2183,23 @@ void RenderBuilderApp::LoadProjectFromDisk(const std::filesystem::path& path)
 
                 ShaderSet shaderSet;
                 shaderSet.name = JsonStringOr(shaderSetValue, "name", "Shader Set");
-                shaderSet.sourcePath = Utf8ToWide(JsonStringOr(shaderSetValue, "sourcePath"));
+                const std::filesystem::path shaderSourcePath = ResolveProjectPath(JsonStringOr(shaderSetValue, "sourcePath"), projectDirectory);
+                shaderSet.sourcePath = shaderSourcePath.wstring();
                 shaderSet.sourceText = JsonStringOr(shaderSetValue, "sourceText");
                 shaderSet.vertexEntry = Utf8ToWide(JsonStringOr(shaderSetValue, "vertexEntry", "VSMain"));
                 shaderSet.pixelEntry = Utf8ToWide(JsonStringOr(shaderSetValue, "pixelEntry", "PSMain"));
                 shaderSet.vertexProfile = Utf8ToWide(JsonStringOr(shaderSetValue, "vertexProfile", "vs_6_9"));
                 shaderSet.pixelProfile = Utf8ToWide(JsonStringOr(shaderSetValue, "pixelProfile", "ps_6_9"));
-                if (shaderSet.sourceText.empty() && !shaderSet.sourcePath.empty() && std::filesystem::exists(shaderSet.sourcePath))
+                if (!shaderSourcePath.empty() && PathExists(shaderSourcePath))
                 {
-                    shaderSet.sourceText = ReadTextFile(shaderSet.sourcePath);
+                    if (shaderSet.sourceText.empty())
+                    {
+                        shaderSet.sourceText = ReadTextFile(shaderSourcePath);
+                    }
+                }
+                else
+                {
+                    AppendMissingAssetDiagnostic(assetDiagnostics, "shader source '" + shaderSet.name + "'", shaderSourcePath);
                 }
                 loadedProject.shaderSets.push_back(shaderSet);
             }
@@ -1669,19 +2208,24 @@ void RenderBuilderApp::LoadProjectFromDisk(const std::filesystem::path& path)
         if (loadedProject.shaderSets.empty())
         {
             ShaderSet shaderSet;
-            shaderSet.name = activeShaderSetName.empty() ? "Default Raster Shader" : activeShaderSetName;
-            shaderSet.sourcePath = Utf8ToWide(JsonStringOr(root, "shaderSourcePath"));
+            shaderSet.name = activeShaderSetName.empty() ? LookDevShaderSetName : activeShaderSetName;
+            const std::filesystem::path shaderSourcePath = ResolveProjectPath(JsonStringOr(root, "shaderSourcePath"), projectDirectory);
+            shaderSet.sourcePath = shaderSourcePath.wstring();
             shaderSet.vertexEntry = Utf8ToWide(JsonStringOr(root, "vertexEntry", "VSMain"));
             shaderSet.pixelEntry = Utf8ToWide(JsonStringOr(root, "pixelEntry", "PSMain"));
             shaderSet.vertexProfile = L"vs_6_9";
             shaderSet.pixelProfile = L"ps_6_9";
-            if (!shaderSet.sourcePath.empty() && std::filesystem::exists(shaderSet.sourcePath))
+            if (!shaderSourcePath.empty() && PathExists(shaderSourcePath))
             {
-                shaderSet.sourceText = ReadTextFile(shaderSet.sourcePath);
+                shaderSet.sourceText = ReadTextFile(shaderSourcePath);
+            }
+            else
+            {
+                AppendMissingAssetDiagnostic(assetDiagnostics, "shader source '" + shaderSet.name + "'", shaderSourcePath);
             }
             if (shaderSet.sourceText.empty())
             {
-                shaderSet.sourcePath = (m_rootDirectory / "Shaders" / "DefaultRaster.hlsl").wstring();
+                shaderSet.sourcePath = (m_rootDirectory / "Shaders" / "LookDevPBR.hlsl").wstring();
                 shaderSet.sourceText = ReadTextFile(shaderSet.sourcePath);
             }
             loadedProject.shaderSets.push_back(shaderSet);
@@ -1701,9 +2245,13 @@ void RenderBuilderApp::LoadProjectFromDisk(const std::filesystem::path& path)
                 assignment.materialName = JsonStringOr(materialValue, "name");
                 assignment.shaderSetName = JsonStringOr(materialValue, "shaderSet", loadedProject.shaderSets.front().name);
                 assignment.baseColorFactor = JsonFloat4Or(materialValue, "baseColorFactor", assignment.baseColorFactor);
+                assignment.emissiveFactor = JsonFloat4Or(materialValue, "emissiveFactor", assignment.emissiveFactor);
                 assignment.roughnessFactor = static_cast<float>(JsonNumberOr(materialValue, "roughnessFactor", assignment.roughnessFactor));
                 assignment.metallicFactor = static_cast<float>(JsonNumberOr(materialValue, "metallicFactor", assignment.metallicFactor));
                 assignment.normalStrength = static_cast<float>(JsonNumberOr(materialValue, "normalStrength", assignment.normalStrength));
+                assignment.occlusionStrength = static_cast<float>(JsonNumberOr(materialValue, "occlusionStrength", assignment.occlusionStrength));
+                assignment.alphaMode = AlphaModeFromJson(JsonStringOr(materialValue, "alphaMode"), assignment.alphaMode);
+                assignment.alphaCutoff = static_cast<float>(JsonNumberOr(materialValue, "alphaCutoff", assignment.alphaCutoff));
                 assignment.flipNormalGreen = JsonBoolOr(materialValue, "flipNormalGreen", assignment.flipNormalGreen);
                 const JsonValue* textures = FindMember(materialValue, "textures");
                 if (textures && textures->type == JsonValue::Type::Object)
@@ -1714,7 +2262,15 @@ void RenderBuilderApp::LoadProjectFromDisk(const std::filesystem::path& path)
                         if (textureValue && textureValue->type == JsonValue::Type::Object)
                         {
                             assignment.textureOverrideEnabled[textureSlot] = JsonBoolOr(*textureValue, "override", false);
-                            assignment.textureOverrides[textureSlot] = Utf8ToWide(JsonStringOr(*textureValue, "path"));
+                            const std::filesystem::path texturePath = ResolveProjectPath(JsonStringOr(*textureValue, "path"), projectDirectory);
+                            assignment.textureOverrides[textureSlot] = texturePath.wstring();
+                            if (assignment.textureOverrideEnabled[textureSlot] && !texturePath.empty())
+                            {
+                                AppendMissingAssetDiagnostic(
+                                    assetDiagnostics,
+                                    "texture override '" + assignment.materialName + " / " + TextureSlotLabels[textureSlot] + "'",
+                                    texturePath);
+                            }
                         }
                     }
                 }
@@ -1729,9 +2285,29 @@ void RenderBuilderApp::LoadProjectFromDisk(const std::filesystem::path& path)
         std::vector<MaterialAssignment> importedAssignments;
         if (!loadedProject.scenePath.empty())
         {
-            LoadScenePath(loadedProject.scenePath, false);
-            sceneLoadDiagnostics = m_sceneDiagnostics;
-            importedAssignments = m_project.materialAssignments;
+            if (PathExists(loadedProject.scenePath))
+            {
+                const bool sceneLoaded = LoadScenePath(loadedProject.scenePath, false);
+                sceneLoadDiagnostics = m_sceneDiagnostics;
+                if (sceneLoaded)
+                {
+                    importedAssignments = m_project.materialAssignments;
+                }
+                else
+                {
+                    UseDefaultScenePreview();
+                }
+            }
+            else
+            {
+                UseDefaultScenePreview();
+                sceneLoadDiagnostics = "Scene file was not found. Using built-in preview cube.";
+            }
+        }
+        else
+        {
+            UseDefaultScenePreview();
+            sceneLoadDiagnostics = "Using built-in preview cube.";
         }
 
         m_project = loadedProject;
@@ -1743,9 +2319,25 @@ void RenderBuilderApp::LoadProjectFromDisk(const std::filesystem::path& path)
         {
             m_project.materialAssignments.push_back({ "Default Material", m_project.shaderSets.front().name });
         }
-        m_backend.SetSkyColors(m_project.skyTopColor, m_project.skyHorizonColor);
+        std::string environmentDiagnostics;
+        if (!m_project.lookDevEnvironment.environmentPath.empty() && PathExists(m_project.lookDevEnvironment.environmentPath))
+        {
+            if (!m_backend.UpdateEnvironmentTexture(m_project.lookDevEnvironment.environmentPath, environmentDiagnostics))
+            {
+                environmentDiagnostics = "Environment load failed: " + environmentDiagnostics;
+            }
+        }
+        else
+        {
+            m_backend.UpdateEnvironmentTexture({}, environmentDiagnostics);
+        }
+        ApplyLookDevSettings();
         m_backend.SetMaterialAssignments(m_project.materialAssignments);
-        ApplyMaterialTextureOverrides(m_project.materialAssignments);
+        const std::string textureOverrideDiagnostics = ApplyMaterialTextureOverrides(m_project.materialAssignments);
+        if (m_project.hasViewportCamera)
+        {
+            m_backend.SetCameraState(m_project.viewportCamera);
+        }
 
         m_activeShaderSetIndex = 0;
         for (std::size_t i = 0; i < m_project.shaderSets.size(); ++i)
@@ -1783,12 +2375,25 @@ void RenderBuilderApp::LoadProjectFromDisk(const std::filesystem::path& path)
 
         m_lastCompileSucceeded = activeCompileSucceeded;
         m_compileDiagnostics = diagnostics.str();
-        m_sceneDiagnostics = "Loaded project from " + path.string();
+        m_sceneDiagnostics = "Loaded project from " + projectPath.string();
         if (!sceneLoadDiagnostics.empty())
         {
             m_sceneDiagnostics += "\n" + sceneLoadDiagnostics;
         }
-        AddRecentProject(path);
+        const std::string missingAssetDiagnostics = assetDiagnostics.str();
+        if (!missingAssetDiagnostics.empty())
+        {
+            m_sceneDiagnostics += "\nAsset diagnostics:" + missingAssetDiagnostics;
+        }
+        if (!textureOverrideDiagnostics.empty())
+        {
+            m_sceneDiagnostics += textureOverrideDiagnostics;
+        }
+        if (!environmentDiagnostics.empty())
+        {
+            m_sceneDiagnostics += "\n" + environmentDiagnostics;
+        }
+        AddRecentProject(projectPath);
         SetProjectDirty(false);
     }
     catch (const std::exception& ex)
@@ -1878,8 +2483,7 @@ LRESULT RenderBuilderApp::HandleMessage(HWND hwnd, UINT message, WPARAM wparam, 
     case WM_EXITSIZEMOVE:
         m_inSizeMove = false;
         KillTimer(hwnd, ResizeMoveTimerId);
-        ApplyPendingResize();
-        ApplyPendingSceneTargetResize();
+        InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     case WM_SIZE:
         m_windowWidth = LOWORD(lparam);
@@ -1898,7 +2502,7 @@ LRESULT RenderBuilderApp::HandleMessage(HWND hwnd, UINT message, WPARAM wparam, 
     case WM_TIMER:
         if (wparam == ResizeMoveTimerId && m_inSizeMove && !m_minimized)
         {
-            Tick();
+            InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
         return 0;

@@ -33,11 +33,16 @@ struct SceneMaterial
     std::wstring normalTexturePath;
     std::wstring roughnessTexturePath;
     std::wstring metallicTexturePath;
+    std::wstring occlusionTexturePath;
+    std::wstring emissiveTexturePath;
     DirectX::XMFLOAT4 baseColorFactor = DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+    DirectX::XMFLOAT4 emissiveFactor = DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f);
     bool hasBaseColorTexture = false;
     bool hasNormalTexture = false;
     bool hasRoughnessTexture = false;
     bool hasMetallicTexture = false;
+    bool hasOcclusionTexture = false;
+    bool hasEmissiveTexture = false;
 };
 
 struct ImportedScene

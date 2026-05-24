@@ -1,0 +1,220 @@
+#include "RenderBuilderShaderABI.hlsli"
+
+static const float PI = 3.14159265359;
+static const uint IBL_SAMPLE_COUNT = 12;
+static const float2 IBL_SAMPLES[IBL_SAMPLE_COUNT] =
+{
+    float2(0.03125, 0.53125),
+    float2(0.28125, 0.15625),
+    float2(0.53125, 0.78125),
+    float2(0.78125, 0.40625),
+    float2(0.15625, 0.90625),
+    float2(0.40625, 0.28125),
+    float2(0.65625, 0.65625),
+    float2(0.90625, 0.03125),
+    float2(0.09375, 0.34375),
+    float2(0.34375, 0.71875),
+    float2(0.59375, 0.09375),
+    float2(0.84375, 0.46875),
+};
+
+RBPixelInput VSMain(RBVertexInput input)
+{
+    RBPixelInput output;
+    const float4 worldPosition = mul(float4(input.position, 1.0), gModel);
+    output.position = mul(float4(input.position, 1.0), gModelViewProjection);
+    output.worldNormal = normalize(mul(float4(input.normal, 0.0), gModel).xyz);
+    output.worldTangent = normalize(mul(float4(input.tangent.xyz, 0.0), gModel).xyz);
+    output.tangentSign = input.tangent.w;
+    output.texcoord = input.texcoord;
+    output.worldPosition = worldPosition.xyz;
+    return output;
+}
+
+float3 ApplyEnvironmentRotation(float3 direction)
+{
+    const float c = cos(gEnvironmentOptions.x);
+    const float s = sin(gEnvironmentOptions.x);
+    return float3(c * direction.x - s * direction.z, direction.y, s * direction.x + c * direction.z);
+}
+
+float2 DirectionToEquirectUv(float3 direction)
+{
+    direction = ApplyEnvironmentRotation(normalize(direction));
+    return float2(atan2(direction.x, direction.z) * 0.159154943 + 0.5, acos(clamp(direction.y, -1.0, 1.0)) * 0.318309886);
+}
+
+void BuildBasis(float3 normal, out float3 tangent, out float3 bitangent)
+{
+    const float3 up = abs(normal.y) < 0.999 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
+    tangent = normalize(cross(up, normal));
+    bitangent = cross(normal, tangent);
+}
+
+float3 SampleEnvironmentMip(float3 direction, float mipLevel)
+{
+    if (gEnvironmentOptions.w <= 0.5)
+    {
+        const float t = saturate(direction.y * 0.5 + 0.5);
+        return lerp(gSkyHorizonColor.rgb, gSkyTopColor.rgb, t) * gEnvironmentOptions.y;
+    }
+    return gEnvironmentTexture.SampleLevel(gLinearWrapSampler, DirectionToEquirectUv(direction), clamp(mipLevel, 0.0, gIblOptions.x)).rgb * gEnvironmentOptions.y;
+}
+
+float3 CosineSampleHemisphere(float2 xi)
+{
+    const float phi = 2.0 * PI * xi.x;
+    const float cosTheta = sqrt(saturate(1.0 - xi.y));
+    const float sinTheta = sqrt(saturate(xi.y));
+    return float3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+}
+
+float3 ImportanceSampleGGX(float2 xi, float roughness, float3 normal)
+{
+    const float a = roughness * roughness;
+    const float phi = 2.0 * PI * xi.x;
+    const float cosTheta = sqrt(saturate((1.0 - xi.y) / max(1.0 + (a * a - 1.0) * xi.y, 1.0e-5)));
+    const float sinTheta = sqrt(saturate(1.0 - cosTheta * cosTheta));
+    const float3 h = float3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+
+    float3 tangent;
+    float3 bitangent;
+    BuildBasis(normal, tangent, bitangent);
+    return normalize(tangent * h.x + bitangent * h.y + normal * h.z);
+}
+
+float3 SampleDiffuseIrradiance(float3 normal)
+{
+    float3 tangent;
+    float3 bitangent;
+    BuildBasis(normal, tangent, bitangent);
+
+    const float diffuseMip = max(gIblOptions.x - 2.0, 0.0);
+    float3 irradiance = SampleEnvironmentMip(normal, diffuseMip);
+    [unroll]
+    for (uint i = 0; i < IBL_SAMPLE_COUNT; ++i)
+    {
+        const float3 hemisphere = CosineSampleHemisphere(IBL_SAMPLES[i]);
+        const float3 sampleDirection = normalize(tangent * hemisphere.x + bitangent * hemisphere.y + normal * hemisphere.z);
+        irradiance += SampleEnvironmentMip(sampleDirection, diffuseMip);
+    }
+    return irradiance / (IBL_SAMPLE_COUNT + 1.0);
+}
+
+float3 SampleSpecularPrefilter(float3 reflectionDirection, float roughness)
+{
+    const float baseMip = saturate(roughness) * saturate(roughness) * gIblOptions.x;
+    float3 prefiltered = SampleEnvironmentMip(reflectionDirection, baseMip);
+    float totalWeight = 1.0;
+
+    [unroll]
+    for (uint i = 0; i < IBL_SAMPLE_COUNT; ++i)
+    {
+        const float3 halfVector = ImportanceSampleGGX(IBL_SAMPLES[i], roughness, reflectionDirection);
+        const float3 sampleDirection = normalize(2.0 * dot(reflectionDirection, halfVector) * halfVector - reflectionDirection);
+        const float weight = saturate(dot(reflectionDirection, sampleDirection));
+        prefiltered += SampleEnvironmentMip(sampleDirection, baseMip) * weight;
+        totalWeight += weight;
+    }
+    return prefiltered / max(totalWeight, 1.0e-5);
+}
+
+float3 ApplyToneMapping(float3 color)
+{
+    color *= exp2(gViewOptions.x);
+    const uint toneMapper = (uint)round(gViewOptions.z);
+    if (toneMapper == RB_TONEMAP_REINHARD)
+    {
+        color = color / (1.0 + color);
+    }
+    else if (toneMapper == RB_TONEMAP_ACES)
+    {
+        color = saturate((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14));
+    }
+    return pow(max(color, 0.0), 1.0 / max(gViewOptions.y, 0.01));
+}
+
+float DistributionGGX(float nDotH, float roughness)
+{
+    const float a = roughness * roughness;
+    const float a2 = a * a;
+    const float denom = nDotH * nDotH * (a2 - 1.0) + 1.0;
+    return a2 / max(PI * denom * denom, 1.0e-5);
+}
+
+float GeometrySchlickGGX(float nDotV, float roughness)
+{
+    const float r = roughness + 1.0;
+    const float k = (r * r) * 0.125;
+    return nDotV / max(nDotV * (1.0 - k) + k, 1.0e-5);
+}
+
+float3 FresnelSchlick(float cosTheta, float3 f0)
+{
+    return f0 + (1.0 - f0) * pow(saturate(1.0 - cosTheta), 5.0);
+}
+
+float4 PSMain(RBPixelInput input) : SV_Target0
+{
+    const float3 vertexNormal = normalize(input.worldNormal);
+    const float3 tangentCandidate = input.worldTangent - vertexNormal * dot(vertexNormal, input.worldTangent);
+    const float3 tangent = tangentCandidate * rsqrt(max(dot(tangentCandidate, tangentCandidate), 1.0e-6));
+    const float3 bitangentCandidate = cross(vertexNormal, tangent) * input.tangentSign;
+    const float3 bitangent = bitangentCandidate * rsqrt(max(dot(bitangentCandidate, bitangentCandidate), 1.0e-6));
+
+    float3 sampledNormal = gNormalTexture.Sample(gLinearWrapSampler, input.texcoord).xyz * 2.0 - 1.0;
+    sampledNormal.xy *= float2(gNormalStrength, gNormalStrength * gNormalGreenScale);
+    sampledNormal = normalize(sampledNormal);
+    const bool hasNormal = (gMaterialTextureMask & RB_TEXTURE_NORMAL) != 0;
+    const float3 normal = hasNormal ? normalize(sampledNormal.x * tangent + sampledNormal.y * bitangent + sampledNormal.z * vertexNormal) : vertexNormal;
+    const float3 viewDirection = normalize(gCameraPositionTime.xyz - input.worldPosition);
+    const float3 lightDirection = normalize(-gLightDirectionIntensity.xyz);
+    const float3 halfVector = normalize(viewDirection + lightDirection);
+
+    const float3 baseTexture = ((gMaterialTextureMask & RB_TEXTURE_BASE_COLOR) != 0)
+        ? gBaseColorTexture.Sample(gLinearWrapSampler, input.texcoord).rgb
+        : float3(0.75, 0.72, 0.68);
+    const float3 baseColor = saturate(baseTexture * gBaseColorFactor.rgb);
+    const float roughnessSample = ((gMaterialTextureMask & RB_TEXTURE_ROUGHNESS) != 0) ? gRoughnessTexture.Sample(gLinearWrapSampler, input.texcoord).r : 1.0;
+    const float metallicSample = ((gMaterialTextureMask & RB_TEXTURE_METALLIC) != 0) ? gMetallicTexture.Sample(gLinearWrapSampler, input.texcoord).r : 1.0;
+    const float aoSample = ((gMaterialTextureMask & RB_TEXTURE_OCCLUSION) != 0) ? gOcclusionTexture.Sample(gLinearWrapSampler, input.texcoord).r : 1.0;
+    const float3 emissiveSample = ((gMaterialTextureMask & RB_TEXTURE_EMISSIVE) != 0) ? gEmissiveTexture.Sample(gLinearWrapSampler, input.texcoord).rgb : float3(1.0, 1.0, 1.0);
+    const float roughness = saturate(max(roughnessSample * gRoughnessFactor, 0.045));
+    const float metallic = saturate(metallicSample * gMetallicFactor);
+    const float occlusion = lerp(1.0, aoSample, saturate(gOcclusionStrength));
+    const float3 emissive = emissiveSample * gEmissiveFactor.rgb * gEmissiveFactor.a;
+
+    const float nDotL = saturate(dot(normal, lightDirection));
+    const float nDotV = saturate(dot(normal, viewDirection));
+    const float nDotH = saturate(dot(normal, halfVector));
+    const float hDotV = saturate(dot(halfVector, viewDirection));
+    const float3 f0 = lerp(float3(0.04, 0.04, 0.04), baseColor, metallic);
+    const float3 fresnel = FresnelSchlick(hDotV, f0);
+    const float distribution = DistributionGGX(nDotH, roughness);
+    const float geometry = GeometrySchlickGGX(nDotV, roughness) * GeometrySchlickGGX(nDotL, roughness);
+    const float3 specularBrdf = distribution * geometry * fresnel / max(4.0 * nDotV * nDotL, 1.0e-5);
+    const float3 diffuseBrdf = (1.0 - fresnel) * (1.0 - metallic) * baseColor / PI;
+    const float3 sunRadiance = gSunColorIntensity.rgb * gSunColorIntensity.a * gLightDirectionIntensity.w;
+    const float3 sunLighting = (diffuseBrdf + specularBrdf) * sunRadiance * nDotL;
+
+    const float3 reflectionDirection = reflect(-viewDirection, normal);
+    const float3 diffuseIbl = SampleDiffuseIrradiance(normal) * baseColor * (1.0 - metallic);
+    const float3 specularIbl = SampleSpecularPrefilter(reflectionDirection, roughness) * FresnelSchlick(nDotV, f0);
+    const float3 ambient = (diffuseIbl * 0.38 + specularIbl) * occlusion * gIblOptions.w;
+    const float3 beauty = ambient + sunLighting + emissive;
+
+    const uint displayMode = (uint)round(gViewOptions.w);
+    if (displayMode == RB_DISPLAY_BASE_COLOR) { return float4(ApplyToneMapping(baseColor), gBaseColorFactor.a); }
+    if (displayMode == RB_DISPLAY_NORMAL) { return float4(normal * 0.5 + 0.5, 1.0); }
+    if (displayMode == RB_DISPLAY_ROUGHNESS) { return float4(roughness.xxx, 1.0); }
+    if (displayMode == RB_DISPLAY_METALLIC) { return float4(metallic.xxx, 1.0); }
+    if (displayMode == RB_DISPLAY_AO) { return float4(occlusion.xxx, 1.0); }
+    if (displayMode == RB_DISPLAY_EMISSIVE) { return float4(ApplyToneMapping(emissive), 1.0); }
+    if (displayMode == RB_DISPLAY_LIGHTING_ONLY) { return float4(ApplyToneMapping(ambient + sunLighting), 1.0); }
+
+    if ((uint)round(gAlphaMode) == 1u && gBaseColorFactor.a < gAlphaCutoff)
+    {
+        discard;
+    }
+    return float4(ApplyToneMapping(beauty), gBaseColorFactor.a);
+}

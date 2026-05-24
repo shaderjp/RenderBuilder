@@ -16,9 +16,15 @@ RenderBuilder は、ランタイム HLSL 開発のための Windows / Visual Stu
 - DirectXTex による DDS/TGA/HDR/WIC 画像の texture upload と checker fallback。
 - imported material を material ごとの draw routing と shader set assignment で描画。
 
+## LookDev ロードマップ
+
+- 専用の `LookDevPBR.hlsl` shader による D3D12 first の PBR preview。
+- HDRI + Sun environment control、tone mapping、debug display mode、turntable preview。
+- Project JSON に scene、material slot、shader assignment、camera、sky、environment、view setting を保存。
+
 ## 今後のマイルストーン
 
-- M2: 現在の snapshot writer を越えた project load/save、より豊富な shader set 管理、material texture slot の拡張。
+- M2: LookDev PBR/IBL workflow、より豊富な shader set 管理、snapshot/export polish。
 - M3: Vulkan SDK の DXC for SPIR-V を使った Vulkan backend parity。
 - M4: meshoptimizer meshlet cache と D3D12/Vulkan Mesh Shader preview。
 - M5: DXR/Vulkan Ray Tracing の実験。

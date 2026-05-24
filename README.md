@@ -16,9 +16,15 @@ RenderBuilder is a Windows / Visual Studio 2022 shader editor prototype for runt
 - DirectXTex base-color texture upload for DDS/TGA/HDR/WIC images, with a checker fallback.
 - Imported materials are rendered through per-material draw routing and shader set assignment.
 
+## LookDev Roadmap
+
+- D3D12-first PBR preview using a dedicated `LookDevPBR.hlsl` shader.
+- HDRI + Sun environment controls, tone mapping, debug display modes, and turntable preview.
+- Project JSON persists scene, material slots, shader assignments, camera, sky, environment, and view settings.
+
 ## Planned Milestones
 
-- M2: Project load/save beyond the current snapshot writer, richer shader set management, and more material texture slots.
+- M2: LookDev PBR/IBL workflow, richer shader set management, and snapshot/export polish.
 - M3: Vulkan backend parity using Vulkan SDK DXC for SPIR-V.
 - M4: meshoptimizer meshlet cache plus D3D12/Vulkan Mesh Shader preview.
 - M5: DXR/Vulkan Ray Tracing experiments.

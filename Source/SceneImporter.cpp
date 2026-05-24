@@ -135,6 +135,19 @@ XMFLOAT4 MaterialBaseColor(const aiMaterial* material)
     return XMFLOAT4(color.r, color.g, color.b, color.a);
 }
 
+XMFLOAT4 MaterialEmissiveColor(const aiMaterial* material)
+{
+    aiColor4D color(0.0f, 0.0f, 0.0f, 1.0f);
+    if (!material || aiGetMaterialColor(material, AI_MATKEY_COLOR_EMISSIVE, &color) != AI_SUCCESS)
+    {
+        return XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f);
+    }
+
+    float intensity = 1.0f;
+    material->Get(AI_MATKEY_EMISSIVE_INTENSITY, intensity);
+    return XMFLOAT4(color.r * intensity, color.g * intensity, color.b * intensity, color.a);
+}
+
 void ExpandBounds(rb::ImportedScene& scene, const XMFLOAT3& position)
 {
     scene.boundsMin.x = (std::min)(scene.boundsMin.x, position.x);
@@ -261,7 +274,7 @@ SceneImportResult SceneImporter::ImportScene(const std::wstring& path)
     {
         const aiMaterial* material = materialIndex < sourceScene->mNumMaterials ? sourceScene->mMaterials[materialIndex] : nullptr;
         SceneMaterial sceneMaterial = {};
-        sceneMaterial.assignment = { MaterialName(material, materialIndex), "Default Raster Shader" };
+        sceneMaterial.assignment = { MaterialName(material, materialIndex), "LookDev PBR" };
         sceneMaterial.baseColorTexturePath = ResolveTexturePath(scenePath.parent_path(), material, aiTextureType_BASE_COLOR);
         if (sceneMaterial.baseColorTexturePath.empty())
         {
@@ -274,17 +287,33 @@ SceneImportResult SceneImporter::ImportScene(const std::wstring& path)
         }
         sceneMaterial.roughnessTexturePath = ResolveTexturePath(scenePath.parent_path(), material, aiTextureType_DIFFUSE_ROUGHNESS);
         sceneMaterial.metallicTexturePath = ResolveTexturePath(scenePath.parent_path(), material, aiTextureType_METALNESS);
+        sceneMaterial.occlusionTexturePath = ResolveTexturePath(scenePath.parent_path(), material, aiTextureType_AMBIENT_OCCLUSION);
+        if (sceneMaterial.occlusionTexturePath.empty())
+        {
+            sceneMaterial.occlusionTexturePath = ResolveTexturePath(scenePath.parent_path(), material, aiTextureType_LIGHTMAP);
+        }
+        sceneMaterial.emissiveTexturePath = ResolveTexturePath(scenePath.parent_path(), material, aiTextureType_EMISSIVE);
         sceneMaterial.hasBaseColorTexture = !sceneMaterial.baseColorTexturePath.empty();
         sceneMaterial.hasNormalTexture = !sceneMaterial.normalTexturePath.empty();
         sceneMaterial.hasRoughnessTexture = !sceneMaterial.roughnessTexturePath.empty();
         sceneMaterial.hasMetallicTexture = !sceneMaterial.metallicTexturePath.empty();
+        sceneMaterial.hasOcclusionTexture = !sceneMaterial.occlusionTexturePath.empty();
+        sceneMaterial.hasEmissiveTexture = !sceneMaterial.emissiveTexturePath.empty();
         sceneMaterial.baseColorFactor = MaterialBaseColor(material);
+        sceneMaterial.emissiveFactor = MaterialEmissiveColor(material);
         sceneMaterial.assignment.baseColorFactor =
         {
             sceneMaterial.baseColorFactor.x,
             sceneMaterial.baseColorFactor.y,
             sceneMaterial.baseColorFactor.z,
             sceneMaterial.baseColorFactor.w,
+        };
+        sceneMaterial.assignment.emissiveFactor =
+        {
+            sceneMaterial.emissiveFactor.x,
+            sceneMaterial.emissiveFactor.y,
+            sceneMaterial.emissiveFactor.z,
+            sceneMaterial.emissiveFactor.w,
         };
         sceneMaterial.assignment.roughnessFactor = sceneMaterial.hasRoughnessTexture ? 1.0f : 0.48f;
         sceneMaterial.assignment.metallicFactor = sceneMaterial.hasMetallicTexture ? 1.0f : 0.0f;

@@ -6,6 +6,7 @@
 
 #include <DirectXTex.h>
 #include <d3dcompiler.h>
+#include <wincodec.h>
 
 #include <algorithm>
 #include <chrono>
@@ -25,19 +26,24 @@ using namespace DirectX;
 namespace
 {
 constexpr UINT SceneSrvDescriptorIndex = 0;
-constexpr UINT MaterialTextureSlotCount = 4;
-constexpr UINT TextureSlotBaseColor = 0;
-constexpr UINT TextureSlotNormal = 1;
-constexpr UINT TextureSlotRoughness = 2;
-constexpr UINT TextureSlotMetallic = 3;
+constexpr UINT MaterialTextureSlotCount = static_cast<UINT>(rb::TextureSlot::Count);
+constexpr UINT TextureSlotBaseColor = static_cast<UINT>(rb::TextureSlot::BaseColor);
+constexpr UINT TextureSlotNormal = static_cast<UINT>(rb::TextureSlot::Normal);
+constexpr UINT TextureSlotRoughness = static_cast<UINT>(rb::TextureSlot::Roughness);
+constexpr UINT TextureSlotMetallic = static_cast<UINT>(rb::TextureSlot::Metallic);
+constexpr UINT TextureSlotOcclusion = static_cast<UINT>(rb::TextureSlot::Occlusion);
+constexpr UINT TextureSlotEmissive = static_cast<UINT>(rb::TextureSlot::Emissive);
 constexpr UINT MaterialSrvDescriptorStart = 1;
 constexpr UINT MaxMaterialCount = 63;
-constexpr UINT ImGuiSrvDescriptorStart = MaterialSrvDescriptorStart + MaxMaterialCount * MaterialTextureSlotCount;
+constexpr UINT EnvironmentSrvDescriptorIndex = MaterialSrvDescriptorStart + MaxMaterialCount * MaterialTextureSlotCount;
+constexpr UINT ImGuiSrvDescriptorStart = EnvironmentSrvDescriptorIndex + 1;
 constexpr UINT SrvDescriptorCapacity = 512;
 constexpr UINT MaterialTextureBaseColorBit = 1u << TextureSlotBaseColor;
 constexpr UINT MaterialTextureNormalBit = 1u << TextureSlotNormal;
 constexpr UINT MaterialTextureRoughnessBit = 1u << TextureSlotRoughness;
 constexpr UINT MaterialTextureMetallicBit = 1u << TextureSlotMetallic;
+constexpr UINT MaterialTextureOcclusionBit = 1u << TextureSlotOcclusion;
+constexpr UINT MaterialTextureEmissiveBit = 1u << TextureSlotEmissive;
 
 D3D12_RESOURCE_DESC BufferDesc(UINT64 size)
 {
@@ -174,6 +180,7 @@ void D3D12Backend::Shutdown()
     m_sceneTarget.Reset();
     m_sceneDepth.Reset();
     m_fallbackTexture.Reset();
+    m_environmentTexture.Reset();
     m_materialTextures.clear();
     m_materials.clear();
     m_draws.clear();
@@ -416,7 +423,14 @@ void D3D12Backend::CreateRootSignature()
     textureRange.RegisterSpace = 0;
     textureRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER rootParameters[3] = {};
+    D3D12_DESCRIPTOR_RANGE environmentRange = {};
+    environmentRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    environmentRange.NumDescriptors = 1;
+    environmentRange.BaseShaderRegister = MaterialTextureSlotCount;
+    environmentRange.RegisterSpace = 0;
+    environmentRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER rootParameters[5] = {};
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rootParameters[0].Descriptor.ShaderRegister = 0;
     rootParameters[0].Descriptor.RegisterSpace = 0;
@@ -432,6 +446,17 @@ void D3D12Backend::CreateRootSignature()
     rootParameters[2].Constants.ShaderRegister = 1;
     rootParameters[2].Constants.RegisterSpace = 0;
     rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    rootParameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    rootParameters[3].Constants.Num32BitValues = sizeof(LookDevConstants) / sizeof(std::uint32_t);
+    rootParameters[3].Constants.ShaderRegister = 2;
+    rootParameters[3].Constants.RegisterSpace = 0;
+    rootParameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    rootParameters[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[4].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[4].DescriptorTable.pDescriptorRanges = &environmentRange;
+    rootParameters[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -680,12 +705,16 @@ void D3D12Backend::CreateDefaultMaterialResources()
     {
         CreateFallbackSrv(MaterialSrvDescriptorStart + textureSlot);
     }
+    if (!m_hasEnvironmentTexture)
+    {
+        CreateFallbackSrv(EnvironmentSrvDescriptorIndex);
+    }
     m_materialTextures.clear();
     m_materials.clear();
 
     RenderMaterial material = {};
     material.name = "Default Material";
-    material.shaderSetName = "Default Raster Shader";
+    material.shaderSetName = "LookDev PBR";
     material.constants.baseColorFactor = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
     material.constants.textureMask = 0;
     material.textureTableGpu = SrvGpuHandle(MaterialSrvDescriptorStart);
@@ -694,6 +723,11 @@ void D3D12Backend::CreateDefaultMaterialResources()
 }
 
 bool D3D12Backend::CreateMaterialTexture(const std::wstring& path, UINT descriptorIndex, ComPtr<ID3D12Resource>& texture, std::string& diagnostics)
+{
+    return CreateTextureFromFile(path, descriptorIndex, texture, diagnostics);
+}
+
+bool D3D12Backend::CreateTextureFromFile(const std::wstring& path, UINT descriptorIndex, ComPtr<ID3D12Resource>& texture, std::string& diagnostics)
 {
     try
     {
@@ -727,8 +761,33 @@ bool D3D12Backend::CreateMaterialTexture(const std::wstring& path, UINT descript
 
         if (!DirectX::IsSupportedTexture(m_device.Get(), metadata))
         {
+            const DXGI_FORMAT fallbackFormat = metadata.format == DXGI_FORMAT_R32G32B32_FLOAT
+                ? DXGI_FORMAT_R32G32B32A32_FLOAT
+                : DXGI_FORMAT_R8G8B8A8_UNORM;
+            DirectX::ScratchImage convertedImage;
+            hr = DirectX::Convert(scratchImage.GetImages(), scratchImage.GetImageCount(), metadata, fallbackFormat, DirectX::TEX_FILTER_DEFAULT, 0.0f, convertedImage);
+            if (SUCCEEDED(hr) && DirectX::IsSupportedTexture(m_device.Get(), convertedImage.GetMetadata()))
+            {
+                scratchImage = std::move(convertedImage);
+                metadata = scratchImage.GetMetadata();
+            }
+        }
+
+        if (!DirectX::IsSupportedTexture(m_device.Get(), metadata))
+        {
             diagnostics = "Texture format is not supported by the active D3D12 device: " + std::filesystem::path(path).filename().string();
             return false;
+        }
+
+        if (metadata.mipLevels <= 1 && metadata.dimension == DirectX::TEX_DIMENSION_TEXTURE2D && metadata.width > 1 && metadata.height > 1)
+        {
+            DirectX::ScratchImage mipChain;
+            hr = DirectX::GenerateMipMaps(scratchImage.GetImages(), scratchImage.GetImageCount(), metadata, DirectX::TEX_FILTER_DEFAULT, 0, mipChain);
+            if (SUCCEEDED(hr))
+            {
+                scratchImage = std::move(mipChain);
+                metadata = scratchImage.GetMetadata();
+            }
         }
 
         hr = DirectX::CreateTexture(m_device.Get(), metadata, texture.GetAddressOf());
@@ -799,6 +858,8 @@ bool D3D12Backend::LoadSceneMesh(const ImportedScene& scene, std::string& diagno
             "normal",
             "roughness",
             "metallic",
+            "occlusion",
+            "emissive",
         };
         const std::array<UINT, MaterialTextureSlotCount> textureSlotBits =
         {
@@ -806,6 +867,8 @@ bool D3D12Backend::LoadSceneMesh(const ImportedScene& scene, std::string& diagno
             MaterialTextureNormalBit,
             MaterialTextureRoughnessBit,
             MaterialTextureMetallicBit,
+            MaterialTextureOcclusionBit,
+            MaterialTextureEmissiveBit,
         };
         for (std::size_t materialIndex = 0; materialIndex < materialCount; ++materialIndex)
         {
@@ -825,14 +888,20 @@ bool D3D12Backend::LoadSceneMesh(const ImportedScene& scene, std::string& diagno
                 renderMaterial.texturePaths[TextureSlotNormal] = sceneMaterial.normalTexturePath;
                 renderMaterial.texturePaths[TextureSlotRoughness] = sceneMaterial.roughnessTexturePath;
                 renderMaterial.texturePaths[TextureSlotMetallic] = sceneMaterial.metallicTexturePath;
+                renderMaterial.texturePaths[TextureSlotOcclusion] = sceneMaterial.occlusionTexturePath;
+                renderMaterial.texturePaths[TextureSlotEmissive] = sceneMaterial.emissiveTexturePath;
                 renderMaterial.constants.baseColorFactor = sceneMaterial.baseColorFactor;
+                renderMaterial.constants.emissiveFactor = sceneMaterial.emissiveFactor;
                 renderMaterial.constants.roughnessFactor = sceneMaterial.assignment.roughnessFactor;
                 renderMaterial.constants.metallicFactor = sceneMaterial.assignment.metallicFactor;
+                renderMaterial.constants.occlusionStrength = sceneMaterial.assignment.occlusionStrength;
+                renderMaterial.constants.alphaCutoff = sceneMaterial.assignment.alphaCutoff;
+                renderMaterial.constants.alphaMode = static_cast<float>(sceneMaterial.assignment.alphaMode);
             }
             else
             {
                 renderMaterial.name = "Default Material";
-                renderMaterial.shaderSetName = "Default Raster Shader";
+                renderMaterial.shaderSetName = "LookDev PBR";
                 renderMaterial.constants.baseColorFactor = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
             }
             renderMaterial.textureTableGpu = SrvGpuHandle(descriptorBase);
@@ -868,7 +937,9 @@ bool D3D12Backend::LoadSceneMesh(const ImportedScene& scene, std::string& diagno
                << loadedTextureCounts[TextureSlotBaseColor] << " base color, "
                << loadedTextureCounts[TextureSlotNormal] << " normal, "
                << loadedTextureCounts[TextureSlotRoughness] << " roughness, "
-               << loadedTextureCounts[TextureSlotMetallic] << " metallic.";
+               << loadedTextureCounts[TextureSlotMetallic] << " metallic, "
+               << loadedTextureCounts[TextureSlotOcclusion] << " occlusion, "
+               << loadedTextureCounts[TextureSlotEmissive] << " emissive.";
         diagnostics = output.str();
         return true;
     }
@@ -877,6 +948,12 @@ bool D3D12Backend::LoadSceneMesh(const ImportedScene& scene, std::string& diagno
         diagnostics = ex.what();
         return false;
     }
+}
+
+void D3D12Backend::ResetPreviewScene()
+{
+    CreateGeometry();
+    CreateDefaultMaterialResources();
 }
 
 void D3D12Backend::CreateConstantBuffer()
@@ -943,6 +1020,28 @@ cbuffer RenderBuilderSky : register(b1)
     float4 gSkyHorizonColor;
 };
 
+cbuffer RenderBuilderScene : register(b0)
+{
+    float4x4 gModelViewProjection;
+    float4x4 gModel;
+    float4x4 gViewProjectionInverse;
+    float4 gCameraPositionTime;
+    float4 gLightDirectionIntensity;
+};
+
+cbuffer RenderBuilderLookDev : register(b2)
+{
+    float4 gSunColorIntensity;
+    float4 gEnvironmentOptions;
+    float4 gViewOptions;
+    float4 gIblOptions;
+    float4 gLookDevSkyTopColor;
+    float4 gLookDevSkyHorizonColor;
+};
+
+Texture2D gEnvironmentTexture : register(t6);
+SamplerState gLinearWrapSampler : register(s0);
+
 SkyVsOut VSMain(uint vertexId : SV_VertexID)
 {
     const float2 positions[3] =
@@ -961,8 +1060,46 @@ SkyVsOut VSMain(uint vertexId : SV_VertexID)
 
 float4 PSMain(SkyVsOut input) : SV_Target0
 {
-    const float t = saturate(input.uv.y);
-    return float4(lerp(gSkyTopColor.rgb, gSkyHorizonColor.rgb, t), 1.0);
+    const float2 clip = input.uv * float2(2.0, -2.0) + float2(-1.0, 1.0);
+    const float4 farPoint = mul(float4(clip, 1.0, 1.0), gViewProjectionInverse);
+    float3 direction = normalize(farPoint.xyz / max(abs(farPoint.w), 1.0e-6) - gCameraPositionTime.xyz);
+
+    const float yaw = gEnvironmentOptions.x;
+    const float c = cos(yaw);
+    const float s = sin(yaw);
+    direction = float3(c * direction.x - s * direction.z, direction.y, s * direction.x + c * direction.z);
+
+    const uint backgroundMode = (uint)round(gEnvironmentOptions.z);
+    const bool hasEnvironment = gEnvironmentOptions.w > 0.5;
+    float3 color;
+    if (backgroundMode == 2)
+    {
+        const float checker = (fmod(floor(input.uv.x * 32.0) + floor(input.uv.y * 32.0), 2.0) == 0.0) ? 0.18 : 0.32;
+        color = float3(checker, checker, checker);
+    }
+    else if (backgroundMode == 1 && hasEnvironment)
+    {
+        const float2 envUv = float2(atan2(direction.x, direction.z) * 0.159154943 + 0.5, acos(clamp(direction.y, -1.0, 1.0)) * 0.318309886);
+        color = gEnvironmentTexture.SampleLevel(gLinearWrapSampler, envUv, 0.0).rgb * gEnvironmentOptions.y;
+    }
+    else
+    {
+        const float t = saturate(input.uv.y);
+        color = lerp(gLookDevSkyTopColor.rgb, gLookDevSkyHorizonColor.rgb, t);
+    }
+
+    color *= exp2(gViewOptions.x);
+    const uint toneMapper = (uint)round(gViewOptions.z);
+    if (toneMapper == 1)
+    {
+        color = color / (1.0 + color);
+    }
+    else if (toneMapper == 2)
+    {
+        color = saturate((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14));
+    }
+    color = pow(max(color, 0.0), 1.0 / max(gViewOptions.y, 0.01));
+    return float4(color, 1.0);
 }
 )";
 
@@ -1141,15 +1278,21 @@ void D3D12Backend::UpdateConstants(float deltaSeconds)
     const float nearPlane = std::max(0.01f, std::min(radius, m_cameraDistance) * 0.001f);
     const float farPlane = std::max(100.0f, (m_cameraDistance + radius) * 4.0f);
     const XMMATRIX projection = XMMatrixPerspectiveFovLH(XMConvertToRadians(55.0f), static_cast<float>(m_sceneWidth) / static_cast<float>(m_sceneHeight), nearPlane, farPlane);
+    const XMMATRIX viewProjection = view * projection;
     const XMMATRIX model = m_loadedSceneMesh ? XMMatrixIdentity() : XMMatrixRotationY(m_elapsedSeconds * 0.65f) * XMMatrixRotationX(m_elapsedSeconds * 0.23f);
 
     SceneConstants constants = {};
-    XMStoreFloat4x4(&constants.modelViewProjection, XMMatrixTranspose(model * view * projection));
+    XMStoreFloat4x4(&constants.modelViewProjection, XMMatrixTranspose(model * viewProjection));
     XMStoreFloat4x4(&constants.model, XMMatrixTranspose(model));
+    XMStoreFloat4x4(&constants.viewProjectionInverse, XMMatrixTranspose(XMMatrixInverse(nullptr, viewProjection)));
     XMFLOAT3 cameraPosition = {};
     XMStoreFloat3(&cameraPosition, eye);
     constants.cameraPositionTime = XMFLOAT4(cameraPosition.x, cameraPosition.y, cameraPosition.z, m_elapsedSeconds);
-    constants.lightDirectionIntensity = XMFLOAT4(-0.35f, -0.75f, 0.55f, 1.2f);
+    constants.lightDirectionIntensity = XMFLOAT4(
+        m_lookDevEnvironment.sunDirection[0],
+        m_lookDevEnvironment.sunDirection[1],
+        m_lookDevEnvironment.sunDirection[2],
+        m_lookDevEnvironment.sunIntensity);
 
     std::memcpy(m_constantBufferMapped, &constants, sizeof(constants));
 }
@@ -1189,6 +1332,24 @@ void D3D12Backend::ResetCameraToScene()
     m_cameraDistance = std::max(0.1f, radius * 2.75f);
     m_cameraYaw = 0.0f;
     m_cameraPitch = 0.12f;
+}
+
+ViewportCamera D3D12Backend::CameraState() const
+{
+    ViewportCamera camera;
+    camera.target = { m_cameraTarget.x, m_cameraTarget.y, m_cameraTarget.z };
+    camera.yaw = m_cameraYaw;
+    camera.pitch = m_cameraPitch;
+    camera.distance = m_cameraDistance;
+    return camera;
+}
+
+void D3D12Backend::SetCameraState(const ViewportCamera& camera)
+{
+    m_cameraTarget = XMFLOAT3(camera.target[0], camera.target[1], camera.target[2]);
+    m_cameraYaw = camera.yaw;
+    m_cameraPitch = ClampFloat(camera.pitch, -1.45f, 1.45f);
+    m_cameraDistance = std::max(0.01f, camera.distance);
 }
 
 void D3D12Backend::OrbitCamera(float yawDeltaRadians, float pitchDeltaRadians)
@@ -1238,10 +1399,18 @@ void D3D12Backend::SetMaterialAssignments(const std::vector<MaterialAssignment>&
                     assignment.baseColorFactor[1],
                     assignment.baseColorFactor[2],
                     assignment.baseColorFactor[3]);
+                material.constants.emissiveFactor = XMFLOAT4(
+                    assignment.emissiveFactor[0],
+                    assignment.emissiveFactor[1],
+                    assignment.emissiveFactor[2],
+                    assignment.emissiveFactor[3]);
                 material.constants.roughnessFactor = assignment.roughnessFactor;
                 material.constants.metallicFactor = assignment.metallicFactor;
                 material.constants.normalStrength = assignment.normalStrength;
                 material.constants.normalGreenScale = assignment.flipNormalGreen ? -1.0f : 1.0f;
+                material.constants.occlusionStrength = assignment.occlusionStrength;
+                material.constants.alphaCutoff = assignment.alphaCutoff;
+                material.constants.alphaMode = static_cast<float>(assignment.alphaMode);
                 break;
             }
         }
@@ -1307,6 +1476,143 @@ void D3D12Backend::SetSkyColors(const std::array<float, 4>& topColor, const std:
 {
     m_skyConstants.topColor = XMFLOAT4(topColor[0], topColor[1], topColor[2], 1.0f);
     m_skyConstants.horizonColor = XMFLOAT4(horizonColor[0], horizonColor[1], horizonColor[2], 1.0f);
+    m_lookDevConstants.skyTopColor = m_skyConstants.topColor;
+    m_lookDevConstants.skyHorizonColor = m_skyConstants.horizonColor;
+}
+
+void D3D12Backend::SetLookDevEnvironment(const LookDevEnvironment& environment)
+{
+    m_lookDevEnvironment = environment;
+    m_lookDevConstants.sunColorIntensity = XMFLOAT4(
+        environment.sunColor[0],
+        environment.sunColor[1],
+        environment.sunColor[2],
+        environment.sunIntensity);
+    m_lookDevConstants.environmentOptions = XMFLOAT4(
+        environment.rotationYaw,
+        environment.intensity,
+        static_cast<float>(environment.backgroundMode),
+        m_hasEnvironmentTexture ? 1.0f : 0.0f);
+    m_lookDevConstants.iblOptions.x = static_cast<float>(std::max<UINT>(m_environmentMipLevels, 1u) - 1u);
+    m_lookDevConstants.iblOptions.y = 1.0f;
+    m_lookDevConstants.iblOptions.z = 1.0f;
+    m_lookDevConstants.iblOptions.w = 1.0f;
+}
+
+void D3D12Backend::SetLookDevViewSettings(const LookDevViewSettings& viewSettings)
+{
+    m_lookDevViewSettings = viewSettings;
+    m_lookDevConstants.viewOptions = XMFLOAT4(
+        viewSettings.exposure,
+        viewSettings.gamma,
+        static_cast<float>(viewSettings.toneMapper),
+        static_cast<float>(viewSettings.displayMode));
+}
+
+void D3D12Backend::SetDebugViewMode(LookDevDisplayMode displayMode)
+{
+    m_lookDevViewSettings.displayMode = displayMode;
+    m_lookDevConstants.viewOptions.w = static_cast<float>(displayMode);
+}
+
+bool D3D12Backend::UpdateEnvironmentTexture(const std::wstring& path, std::string& diagnostics)
+{
+    if (path.empty())
+    {
+        WaitForGpu();
+        CreateFallbackSrv(EnvironmentSrvDescriptorIndex);
+        m_environmentTexture.Reset();
+        m_hasEnvironmentTexture = false;
+        m_environmentMipLevels = 1;
+        m_lookDevEnvironment.environmentPath.clear();
+        m_lookDevConstants.environmentOptions.w = 0.0f;
+        m_lookDevConstants.iblOptions.x = 0.0f;
+        m_environmentStatus = "Environment texture cleared. Using SkyColor/default fallback.";
+        diagnostics = m_environmentStatus;
+        return true;
+    }
+
+    ComPtr<ID3D12Resource> newTexture;
+    std::string textureDiagnostics;
+    if (!CreateTextureFromFile(path, EnvironmentSrvDescriptorIndex, newTexture, textureDiagnostics))
+    {
+        diagnostics = textureDiagnostics + " Keeping the last valid environment.";
+        return false;
+    }
+
+    m_environmentTexture = newTexture;
+    m_hasEnvironmentTexture = true;
+    m_environmentMipLevels = std::max<UINT>(newTexture->GetDesc().MipLevels, 1u);
+    m_lookDevEnvironment.environmentPath = path;
+    m_lookDevConstants.environmentOptions.w = 1.0f;
+    m_lookDevConstants.iblOptions.x = static_cast<float>(m_environmentMipLevels - 1u);
+    m_environmentStatus = "Loaded environment " + std::filesystem::path(path).filename().string();
+    diagnostics = m_environmentStatus + "\n" + textureDiagnostics;
+    return true;
+}
+
+bool D3D12Backend::SaveSceneSnapshot(const std::wstring& path, std::string& diagnostics)
+{
+    if (!m_sceneTarget)
+    {
+        diagnostics = "Scene target is not available.";
+        return false;
+    }
+
+    try
+    {
+        WaitForGpu();
+        DirectX::ScratchImage captured;
+        HRESULT hr = DirectX::CaptureTexture(
+            m_commandQueue.Get(),
+            m_sceneTarget.Get(),
+            false,
+            captured,
+            m_sceneTargetState,
+            m_sceneTargetState);
+        if (FAILED(hr))
+        {
+            diagnostics = "DirectXTex failed to capture viewport: " + HResultMessage(hr);
+            return false;
+        }
+
+        const DirectX::Image* capturedImage = captured.GetImage(0, 0, 0);
+        if (!capturedImage)
+        {
+            diagnostics = "Captured viewport image was empty.";
+            return false;
+        }
+
+        DirectX::ScratchImage ldrImage;
+        hr = DirectX::Convert(*capturedImage, DXGI_FORMAT_R8G8B8A8_UNORM, DirectX::TEX_FILTER_DEFAULT, 0.0f, ldrImage);
+        if (FAILED(hr))
+        {
+            diagnostics = "DirectXTex failed to convert viewport image: " + HResultMessage(hr);
+            return false;
+        }
+
+        const DirectX::Image* outputImage = ldrImage.GetImage(0, 0, 0);
+        if (!outputImage)
+        {
+            diagnostics = "Converted viewport image was empty.";
+            return false;
+        }
+
+        hr = DirectX::SaveToWICFile(*outputImage, DirectX::WIC_FLAGS_NONE, GUID_ContainerFormatPng, path.c_str());
+        if (FAILED(hr))
+        {
+            diagnostics = "DirectXTex failed to write snapshot: " + HResultMessage(hr);
+            return false;
+        }
+
+        diagnostics = "Saved viewport snapshot to " + std::filesystem::path(path).string();
+        return true;
+    }
+    catch (const std::exception& ex)
+    {
+        diagnostics = ex.what();
+        return false;
+    }
 }
 
 ID3D12PipelineState* D3D12Backend::PipelineForMaterial(const RenderMaterial& material) const
@@ -1337,7 +1643,9 @@ void D3D12Backend::DrawSky()
 
     m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
     m_commandList->SetPipelineState(m_skyPipelineState.Get());
-    m_commandList->SetGraphicsRoot32BitConstants(2, sizeof(SkyConstants) / sizeof(std::uint32_t), &m_skyConstants, 0);
+    m_commandList->SetGraphicsRootConstantBufferView(0, m_constantBuffer->GetGPUVirtualAddress());
+    m_commandList->SetGraphicsRoot32BitConstants(3, sizeof(LookDevConstants) / sizeof(std::uint32_t), &m_lookDevConstants, 0);
+    m_commandList->SetGraphicsRootDescriptorTable(4, SrvGpuHandle(EnvironmentSrvDescriptorIndex));
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_commandList->IASetVertexBuffers(0, 0, nullptr);
     m_commandList->IASetIndexBuffer(nullptr);
@@ -1381,6 +1689,8 @@ void D3D12Backend::Render(float deltaSeconds, const std::vector<std::uint8_t>&, 
     DrawSky();
     m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
     m_commandList->SetGraphicsRootConstantBufferView(0, m_constantBuffer->GetGPUVirtualAddress());
+    m_commandList->SetGraphicsRoot32BitConstants(3, sizeof(LookDevConstants) / sizeof(std::uint32_t), &m_lookDevConstants, 0);
+    m_commandList->SetGraphicsRootDescriptorTable(4, SrvGpuHandle(EnvironmentSrvDescriptorIndex));
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_commandList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
     m_commandList->IASetIndexBuffer(&m_indexBufferView);
