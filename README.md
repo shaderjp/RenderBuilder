@@ -1,5 +1,7 @@
 # RenderBuilder
 
+[日本語版 README](README.ja.md)
+
 RenderBuilder is a Windows / Visual Studio 2022 shader editor prototype for runtime HLSL development.
 
 ## Current MVP
