@@ -36,14 +36,14 @@ public:
 
     void Initialize(HWND hwnd, UINT width, UINT height);
     void Shutdown();
-    void Resize(UINT width, UINT height);
+    bool Resize(UINT width, UINT height);
     void Render(float deltaSeconds, const std::vector<std::uint8_t>& vertexShader, const std::vector<std::uint8_t>& pixelShader);
     bool TryApplyShaders(const std::vector<std::uint8_t>& vertexShader, const std::vector<std::uint8_t>& pixelShader, std::string& diagnostics);
     bool TryApplyShaders(const std::string& shaderSetName, const std::vector<std::uint8_t>& vertexShader, const std::vector<std::uint8_t>& pixelShader, std::string& diagnostics);
     bool LoadSceneMesh(const ImportedScene& scene, std::string& diagnostics);
     void SetMaterialAssignments(const std::vector<MaterialAssignment>& assignments);
     bool UpdateMaterialTextureSlot(const std::string& materialName, std::uint32_t textureSlot, const std::wstring& path, std::string& diagnostics);
-    void ResizeSceneTarget(UINT width, UINT height);
+    bool ResizeSceneTarget(UINT width, UINT height);
     void SetSkyColors(const std::array<float, 4>& topColor, const std::array<float, 4>& horizonColor);
     void SetLookDevEnvironment(const LookDevEnvironment& environment);
     void SetLookDevViewSettings(const LookDevViewSettings& viewSettings);
@@ -155,6 +155,7 @@ private:
     void InitializeImGui(HWND hwnd);
     void ReleaseRenderTargets();
     void WaitForGpu();
+    bool TryWaitForGpu(const char* reason, DWORD timeoutMs);
     void MoveToNextFrame();
     void UpdateConstants(float deltaSeconds);
     void CameraBasis(DirectX::XMVECTOR& forward, DirectX::XMVECTOR& right, DirectX::XMVECTOR& up) const;
@@ -188,6 +189,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Fence> m_fence;
     HANDLE m_fenceEvent = nullptr;
     std::array<UINT64, FrameCount> m_fenceValues = {};
+    UINT64 m_nextFenceValue = 1;
     UINT m_frameIndex = 0;
     UINT m_rtvDescriptorSize = 0;
 
@@ -235,5 +237,6 @@ private:
     bool m_hasEnvironmentTexture = false;
     UINT m_environmentMipLevels = 1;
     std::string m_environmentStatus = "Using SkyColor background.";
+    int m_traceRenderFrames = 0;
 };
 }

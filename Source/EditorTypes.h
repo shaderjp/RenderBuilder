@@ -141,6 +141,16 @@ struct LookDevViewSettings
     float turntableSpeed = 0.35f;
 };
 
+struct LookDevPreset
+{
+    std::string name = "Default Studio";
+    std::array<float, 4> skyTopColor = { 0.12f, 0.22f, 0.36f, 1.0f };
+    std::array<float, 4> skyHorizonColor = { 0.035f, 0.045f, 0.055f, 1.0f };
+    LookDevEnvironment environment;
+    LookDevViewSettings viewSettings;
+    bool preserveEnvironmentPath = false;
+};
+
 struct ProjectFile
 {
     std::wstring path;
@@ -151,6 +161,8 @@ struct ProjectFile
     bool hasViewportCamera = false;
     LookDevEnvironment lookDevEnvironment;
     LookDevViewSettings lookDevViewSettings;
+    std::string activeLookDevPresetName = "Default Studio";
+    std::vector<LookDevPreset> lookDevPresets;
     std::vector<ShaderSet> shaderSets;
     std::vector<MaterialAssignment> materialAssignments;
 };

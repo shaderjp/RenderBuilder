@@ -115,6 +115,8 @@ Scene / Asset Browser では Viewport の背景、lighting、tone mapping を調
 
 | 項目 | 説明 |
 | --- | --- |
+| LookDev Preset | sky、environment、sun、tone mapping、display mode をまとめて切り替えます。初期 preset は `Default Studio`、`Neutral Gray`、`Outdoor HDRI` です。 |
+| Save Current Preset | 現在の LookDev 設定を名前付き preset として保存します。 |
 | Sky Top / Sky Horizon | SkyColor 背景の上端色と地平線色です。 |
 | Load HDRI... | `.hdr` / `.dds` environment texture を読み込みます。 |
 | Clear HDRI | 現在の HDRI を解除します。 |
@@ -144,6 +146,7 @@ Project JSON には主に次の状態が保存されます。
 | Camera | `viewportCamera.target`、`yaw`、`pitch`、`distance` |
 | Sky / Environment | sky color、HDRI path、rotation、intensity、background mode、sun setting |
 | View Settings | exposure、tone mapper、gamma、display mode、turntable |
+| LookDev Presets | active preset と、名前付き LookDev preset 配列 |
 | Shader | active shader set、source path、source text、entry point、profile |
 | Materials | material name、shader set assignment、PBR factors、texture slot override、normal setting、alpha setting |
 

@@ -48,6 +48,7 @@ constexpr const wchar_t* TextureFileFilter = L"Texture Files\0*.dds;*.tga;*.hdr;
 constexpr const wchar_t* EnvironmentFileFilter = L"Environment Files\0*.hdr;*.dds;*.exr;*.png;*.jpg;*.jpeg\0All Files\0*.*\0";
 constexpr const char* LookDevShaderSetName = "LookDev PBR";
 constexpr const char* DefaultRasterShaderSetName = "Default Raster Shader";
+constexpr const char* CustomLookDevPresetName = "Custom";
 
 std::wstring Utf8ToWide(const std::string& text)
 {
@@ -274,6 +275,82 @@ rb::LookDevDisplayMode DisplayModeFromJson(const std::string& text, rb::LookDevD
     if (text == "LightingOnly") { return rb::LookDevDisplayMode::LightingOnly; }
     if (text == "Beauty") { return rb::LookDevDisplayMode::Beauty; }
     return fallback;
+}
+
+rb::LookDevPreset MakeLookDevPreset(
+    const char* name,
+    const std::array<float, 4>& skyTopColor,
+    const std::array<float, 4>& skyHorizonColor,
+    rb::LookDevBackgroundMode backgroundMode,
+    const std::array<float, 3>& sunDirection,
+    const std::array<float, 3>& sunColor,
+    float sunIntensity,
+    float environmentIntensity,
+    float exposure,
+    rb::ToneMapper toneMapper,
+    rb::LookDevDisplayMode displayMode,
+    bool preserveEnvironmentPath)
+{
+    rb::LookDevPreset preset;
+    preset.name = name;
+    preset.skyTopColor = skyTopColor;
+    preset.skyHorizonColor = skyHorizonColor;
+    preset.environment.backgroundMode = backgroundMode;
+    preset.environment.sunDirection = sunDirection;
+    preset.environment.sunColor = sunColor;
+    preset.environment.sunIntensity = sunIntensity;
+    preset.environment.intensity = environmentIntensity;
+    preset.viewSettings.exposure = exposure;
+    preset.viewSettings.toneMapper = toneMapper;
+    preset.viewSettings.displayMode = displayMode;
+    preset.preserveEnvironmentPath = preserveEnvironmentPath;
+    return preset;
+}
+
+std::vector<rb::LookDevPreset> BuiltInLookDevPresets()
+{
+    return
+    {
+        MakeLookDevPreset(
+            "Default Studio",
+            { 0.12f, 0.22f, 0.36f, 1.0f },
+            { 0.035f, 0.045f, 0.055f, 1.0f },
+            rb::LookDevBackgroundMode::SkyColor,
+            { -0.35f, -0.75f, 0.55f },
+            { 1.0f, 0.96f, 0.88f },
+            1.2f,
+            1.0f,
+            0.0f,
+            rb::ToneMapper::Aces,
+            rb::LookDevDisplayMode::Beauty,
+            false),
+        MakeLookDevPreset(
+            "Neutral Gray",
+            { 0.42f, 0.42f, 0.42f, 1.0f },
+            { 0.18f, 0.18f, 0.18f, 1.0f },
+            rb::LookDevBackgroundMode::SkyColor,
+            { -0.20f, -0.80f, 0.48f },
+            { 1.0f, 1.0f, 1.0f },
+            0.85f,
+            0.0f,
+            0.0f,
+            rb::ToneMapper::Aces,
+            rb::LookDevDisplayMode::Beauty,
+            false),
+        MakeLookDevPreset(
+            "Outdoor HDRI",
+            { 0.36f, 0.54f, 0.76f, 1.0f },
+            { 0.72f, 0.80f, 0.88f, 1.0f },
+            rb::LookDevBackgroundMode::Hdri,
+            { -0.52f, -0.62f, 0.32f },
+            { 1.0f, 0.93f, 0.82f },
+            2.5f,
+            1.35f,
+            -0.25f,
+            rb::ToneMapper::Aces,
+            rb::LookDevDisplayMode::Beauty,
+            true),
+    };
 }
 
 bool PathExists(const std::filesystem::path& path)
@@ -697,6 +774,35 @@ std::array<float, 3> JsonFloat3Or(const JsonValue& value, const char* name, cons
     }
     return result;
 }
+
+rb::LookDevEnvironment JsonLookDevEnvironmentOr(
+    const JsonValue& value,
+    const std::filesystem::path& projectDirectory,
+    const rb::LookDevEnvironment& fallback)
+{
+    rb::LookDevEnvironment environment = fallback;
+    const std::filesystem::path environmentPath = ResolveProjectPath(JsonStringOr(value, "environmentPath"), projectDirectory);
+    environment.environmentPath = environmentPath.wstring();
+    environment.rotationYaw = static_cast<float>(JsonNumberOr(value, "rotationYaw", environment.rotationYaw));
+    environment.intensity = static_cast<float>(JsonNumberOr(value, "intensity", environment.intensity));
+    environment.backgroundMode = BackgroundModeFromJson(JsonStringOr(value, "backgroundMode"), environment.backgroundMode);
+    environment.sunDirection = JsonFloat3Or(value, "sunDirection", environment.sunDirection);
+    environment.sunColor = JsonFloat3Or(value, "sunColor", environment.sunColor);
+    environment.sunIntensity = static_cast<float>(JsonNumberOr(value, "sunIntensity", environment.sunIntensity));
+    return environment;
+}
+
+rb::LookDevViewSettings JsonLookDevViewSettingsOr(const JsonValue& value, const rb::LookDevViewSettings& fallback)
+{
+    rb::LookDevViewSettings viewSettings = fallback;
+    viewSettings.exposure = static_cast<float>(JsonNumberOr(value, "exposure", viewSettings.exposure));
+    viewSettings.toneMapper = ToneMapperFromJson(JsonStringOr(value, "toneMapper"), viewSettings.toneMapper);
+    viewSettings.gamma = static_cast<float>(JsonNumberOr(value, "gamma", viewSettings.gamma));
+    viewSettings.displayMode = DisplayModeFromJson(JsonStringOr(value, "displayMode"), viewSettings.displayMode);
+    viewSettings.turntableEnabled = JsonBoolOr(value, "turntableEnabled", viewSettings.turntableEnabled);
+    viewSettings.turntableSpeed = static_cast<float>(JsonNumberOr(value, "turntableSpeed", viewSettings.turntableSpeed));
+    return viewSettings;
+}
 }
 
 namespace rb
@@ -853,6 +959,8 @@ void RenderBuilderApp::LoadDefaultShader()
 
     m_project.shaderSets = { m_activeShaderSet, defaultRasterSet };
     m_project.materialAssignments = { { "Default Material", m_activeShaderSet.name } };
+    m_project.lookDevPresets = BuiltInLookDevPresets();
+    m_project.activeLookDevPresetName = "Default Studio";
     m_activeShaderSetIndex = 0;
     m_shaderSetSerial = 3;
     m_backend.SetSkyColors(m_project.skyTopColor, m_project.skyHorizonColor);
@@ -907,6 +1015,108 @@ void RenderBuilderApp::ApplyLookDevSettings()
     m_backend.SetSkyColors(m_project.skyTopColor, m_project.skyHorizonColor);
     m_backend.SetLookDevEnvironment(m_project.lookDevEnvironment);
     m_backend.SetLookDevViewSettings(m_project.lookDevViewSettings);
+}
+
+void RenderBuilderApp::EnsureLookDevPresets()
+{
+    const std::vector<LookDevPreset> builtInPresets = BuiltInLookDevPresets();
+    for (const LookDevPreset& builtInPreset : builtInPresets)
+    {
+        const auto existing = std::find_if(
+            m_project.lookDevPresets.begin(),
+            m_project.lookDevPresets.end(),
+            [&](const LookDevPreset& preset) { return preset.name == builtInPreset.name; });
+        if (existing == m_project.lookDevPresets.end())
+        {
+            m_project.lookDevPresets.push_back(builtInPreset);
+        }
+    }
+
+    if (m_project.activeLookDevPresetName.empty())
+    {
+        m_project.activeLookDevPresetName = m_project.lookDevPresets.empty() ? CustomLookDevPresetName : m_project.lookDevPresets.front().name;
+    }
+}
+
+LookDevPreset RenderBuilderApp::CaptureCurrentLookDevPreset(const std::string& name) const
+{
+    LookDevPreset preset;
+    preset.name = name.empty() ? CustomLookDevPresetName : name;
+    preset.skyTopColor = m_project.skyTopColor;
+    preset.skyHorizonColor = m_project.skyHorizonColor;
+    preset.environment = m_project.lookDevEnvironment;
+    preset.viewSettings = m_project.lookDevViewSettings;
+    preset.preserveEnvironmentPath = false;
+    return preset;
+}
+
+void RenderBuilderApp::UpsertLookDevPreset(const LookDevPreset& preset)
+{
+    const auto existing = std::find_if(
+        m_project.lookDevPresets.begin(),
+        m_project.lookDevPresets.end(),
+        [&](const LookDevPreset& candidate) { return candidate.name == preset.name; });
+    if (existing != m_project.lookDevPresets.end())
+    {
+        *existing = preset;
+    }
+    else
+    {
+        m_project.lookDevPresets.push_back(preset);
+    }
+}
+
+void RenderBuilderApp::ApplyLookDevPreset(std::size_t index)
+{
+    EnsureLookDevPresets();
+    if (index >= m_project.lookDevPresets.size())
+    {
+        return;
+    }
+
+    const LookDevPreset preset = m_project.lookDevPresets[index];
+    const std::wstring previousEnvironmentPath = m_project.lookDevEnvironment.environmentPath;
+    m_project.skyTopColor = preset.skyTopColor;
+    m_project.skyHorizonColor = preset.skyHorizonColor;
+    m_project.lookDevEnvironment = preset.environment;
+    m_project.lookDevViewSettings = preset.viewSettings;
+    m_project.activeLookDevPresetName = preset.name;
+
+    if (preset.preserveEnvironmentPath && m_project.lookDevEnvironment.environmentPath.empty())
+    {
+        m_project.lookDevEnvironment.environmentPath = previousEnvironmentPath;
+    }
+
+    std::string environmentDiagnostics;
+    if (m_project.lookDevEnvironment.environmentPath.empty())
+    {
+        m_backend.UpdateEnvironmentTexture({}, environmentDiagnostics);
+    }
+    else if (PathExists(m_project.lookDevEnvironment.environmentPath))
+    {
+        if (!m_backend.UpdateEnvironmentTexture(m_project.lookDevEnvironment.environmentPath, environmentDiagnostics))
+        {
+            environmentDiagnostics = "Preset environment load failed: " + environmentDiagnostics;
+        }
+    }
+    else
+    {
+        m_backend.UpdateEnvironmentTexture({}, environmentDiagnostics);
+        environmentDiagnostics = "Preset environment missing: " + WideToUtf8(m_project.lookDevEnvironment.environmentPath);
+    }
+
+    ApplyLookDevSettings();
+    m_sceneDiagnostics = "Applied LookDev preset '" + preset.name + "'.";
+    if (!environmentDiagnostics.empty())
+    {
+        m_sceneDiagnostics += "\n" + environmentDiagnostics;
+    }
+    MarkProjectDirty();
+}
+
+void RenderBuilderApp::MarkLookDevCustom()
+{
+    m_project.activeLookDevPresetName = CustomLookDevPresetName;
 }
 
 void RenderBuilderApp::LoadShaderFromDisk(const std::filesystem::path& path)
@@ -978,10 +1188,16 @@ void RenderBuilderApp::Tick()
         return;
     }
 
-    if (!m_inSizeMove)
+    if (m_inSizeMove)
     {
-        ApplyPendingResize();
-        ApplyPendingSceneTargetResize();
+        Sleep(16);
+        return;
+    }
+
+    if (!ApplyPendingResize() || !ApplyPendingSceneTargetResize())
+    {
+        Sleep(1);
+        return;
     }
 
     ImGui_ImplDX12_NewFrame();
@@ -1009,15 +1225,26 @@ void RenderBuilderApp::RequestResize(UINT width, UINT height)
     m_pendingResize = true;
 }
 
-void RenderBuilderApp::ApplyPendingResize()
+bool RenderBuilderApp::ApplyPendingResize()
 {
     if (!m_pendingResize || !m_backend.Device())
     {
-        return;
+        return true;
+    }
+
+    if (!m_backend.Resize(m_pendingResizeWidth, m_pendingResizeHeight))
+    {
+        ++m_resizeDeferFrames;
+        if (m_resizeDeferFrames == 1 || (m_resizeDeferFrames % 60) == 0)
+        {
+            m_sceneDiagnostics = "Window resize is waiting for the GPU. See Bin/Logs/RenderBuilder.log if it does not recover.";
+        }
+        return false;
     }
 
     m_pendingResize = false;
-    m_backend.Resize(m_pendingResizeWidth, m_pendingResizeHeight);
+    m_resizeDeferFrames = 0;
+    return true;
 }
 
 void RenderBuilderApp::RequestSceneTargetResize(UINT width, UINT height)
@@ -1035,17 +1262,28 @@ void RenderBuilderApp::RequestSceneTargetResize(UINT width, UINT height)
     m_pendingSceneTargetResize = true;
 }
 
-void RenderBuilderApp::ApplyPendingSceneTargetResize()
+bool RenderBuilderApp::ApplyPendingSceneTargetResize()
 {
     if (!m_pendingSceneTargetResize || !m_backend.Device())
     {
-        return;
+        return true;
     }
 
     const UINT width = m_pendingSceneTargetWidth;
     const UINT height = m_pendingSceneTargetHeight;
+    if (!m_backend.ResizeSceneTarget(width, height))
+    {
+        ++m_sceneTargetResizeDeferFrames;
+        if (m_sceneTargetResizeDeferFrames == 1 || (m_sceneTargetResizeDeferFrames % 60) == 0)
+        {
+            m_sceneDiagnostics = "Viewport target resize is waiting for the GPU. See Bin/Logs/RenderBuilder.log if it does not recover.";
+        }
+        return false;
+    }
+
     m_pendingSceneTargetResize = false;
-    m_backend.ResizeSceneTarget(width, height);
+    m_sceneTargetResizeDeferFrames = 0;
+    return true;
 }
 
 void RenderBuilderApp::DrawUi()
@@ -1511,10 +1749,70 @@ void RenderBuilderApp::DrawAssetBrowserPanel()
     skyChanged |= ImGui::ColorEdit3("Sky Horizon", m_project.skyHorizonColor.data());
     if (skyChanged)
     {
+        MarkLookDevCustom();
         ApplyLookDevSettings();
         MarkProjectDirty();
     }
     ImGui::SeparatorText("Environment");
+    EnsureLookDevPresets();
+    const auto activePreset = std::find_if(
+        m_project.lookDevPresets.begin(),
+        m_project.lookDevPresets.end(),
+        [&](const LookDevPreset& preset) { return preset.name == m_project.activeLookDevPresetName; });
+    const std::string presetPreview = activePreset == m_project.lookDevPresets.end() ? CustomLookDevPresetName : activePreset->name;
+    if (ImGui::BeginCombo("LookDev Preset", presetPreview.c_str()))
+    {
+        for (std::size_t presetIndex = 0; presetIndex < m_project.lookDevPresets.size(); ++presetIndex)
+        {
+            const LookDevPreset& preset = m_project.lookDevPresets[presetIndex];
+            const bool selected = preset.name == m_project.activeLookDevPresetName;
+            if (ImGui::Selectable(preset.name.c_str(), selected))
+            {
+                ApplyLookDevPreset(presetIndex);
+            }
+            if (selected)
+            {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        if (activePreset == m_project.lookDevPresets.end())
+        {
+            ImGui::Separator();
+            ImGui::TextDisabled("%s", CustomLookDevPresetName);
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Save Current Preset"))
+    {
+        const std::string baseName = presetPreview == CustomLookDevPresetName ? "Custom Preset" : presetPreview + " Copy";
+        std::snprintf(m_lookDevPresetNameBuffer, sizeof(m_lookDevPresetNameBuffer), "%s", baseName.c_str());
+        ImGui::OpenPopup("Save LookDev Preset");
+    }
+    if (ImGui::BeginPopupModal("Save LookDev Preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::InputText("Name", m_lookDevPresetNameBuffer, sizeof(m_lookDevPresetNameBuffer));
+        if (ImGui::Button("Save"))
+        {
+            std::string presetName = m_lookDevPresetNameBuffer;
+            if (presetName.empty())
+            {
+                presetName = "Custom Preset";
+            }
+            UpsertLookDevPreset(CaptureCurrentLookDevPreset(presetName));
+            m_project.activeLookDevPresetName = presetName;
+            m_sceneDiagnostics = "Saved LookDev preset '" + presetName + "'.";
+            MarkProjectDirty();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel"))
+        {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     ImGui::Text("HDRI: %s", m_project.lookDevEnvironment.environmentPath.empty() ? "<none>" : TextureFileName(m_project.lookDevEnvironment.environmentPath).c_str());
     if (ImGui::IsItemHovered() && !m_project.lookDevEnvironment.environmentPath.empty())
     {
@@ -1529,6 +1827,7 @@ void RenderBuilderApp::DrawAssetBrowserPanel()
             std::string diagnostics;
             if (m_backend.UpdateEnvironmentTexture(path.wstring(), diagnostics))
             {
+                MarkLookDevCustom();
                 m_project.lookDevEnvironment.environmentPath = path.wstring();
                 if (m_project.lookDevEnvironment.backgroundMode == LookDevBackgroundMode::SkyColor)
                 {
@@ -1549,6 +1848,7 @@ void RenderBuilderApp::DrawAssetBrowserPanel()
     {
         std::string diagnostics;
         m_backend.UpdateEnvironmentTexture({}, diagnostics);
+        MarkLookDevCustom();
         m_project.lookDevEnvironment.environmentPath.clear();
         ApplyLookDevSettings();
         m_sceneDiagnostics = diagnostics;
@@ -1601,6 +1901,7 @@ void RenderBuilderApp::DrawAssetBrowserPanel()
     ImGui::PopItemWidth();
     if (lookDevChanged)
     {
+        MarkLookDevCustom();
         ApplyLookDevSettings();
         MarkProjectDirty();
     }
@@ -1912,6 +2213,15 @@ bool RenderBuilderApp::SaveProjectToDisk(const std::filesystem::path& requestedP
         const std::filesystem::path projectDirectory = path.parent_path();
         m_project.viewportCamera = m_backend.CameraState();
         m_project.hasViewportCamera = true;
+        EnsureLookDevPresets();
+        const auto activePreset = std::find_if(
+            m_project.lookDevPresets.begin(),
+            m_project.lookDevPresets.end(),
+            [&](const LookDevPreset& preset) { return preset.name == m_project.activeLookDevPresetName; });
+        if (activePreset == m_project.lookDevPresets.end() || m_project.activeLookDevPresetName == CustomLookDevPresetName)
+        {
+            UpsertLookDevPreset(CaptureCurrentLookDevPreset(m_project.activeLookDevPresetName.empty() ? CustomLookDevPresetName : m_project.activeLookDevPresetName));
+        }
 
         const std::filesystem::path parent = path.parent_path();
         if (!parent.empty())
@@ -1962,6 +2272,48 @@ bool RenderBuilderApp::SaveProjectToDisk(const std::filesystem::path& requestedP
              << "\"displayMode\": \"" << EscapeJson(DisplayModeJsonName(m_project.lookDevViewSettings.displayMode)) << "\", "
              << "\"turntableEnabled\": " << (m_project.lookDevViewSettings.turntableEnabled ? "true" : "false") << ", "
              << "\"turntableSpeed\": " << m_project.lookDevViewSettings.turntableSpeed << " },\n";
+        json << "  \"activeLookDevPreset\": \"" << EscapeJson(m_project.activeLookDevPresetName) << "\",\n";
+        json << "  \"lookDevPresets\": [\n";
+        for (std::size_t i = 0; i < m_project.lookDevPresets.size(); ++i)
+        {
+            const LookDevPreset& preset = m_project.lookDevPresets[i];
+            json << "    { "
+                 << "\"name\": \"" << EscapeJson(preset.name) << "\", "
+                 << "\"skyTopColor\": ["
+                 << preset.skyTopColor[0] << ", "
+                 << preset.skyTopColor[1] << ", "
+                 << preset.skyTopColor[2] << ", "
+                 << preset.skyTopColor[3] << "], "
+                 << "\"skyHorizonColor\": ["
+                 << preset.skyHorizonColor[0] << ", "
+                 << preset.skyHorizonColor[1] << ", "
+                 << preset.skyHorizonColor[2] << ", "
+                 << preset.skyHorizonColor[3] << "], "
+                 << "\"preserveEnvironmentPath\": " << (preset.preserveEnvironmentPath ? "true" : "false") << ", "
+                 << "\"environment\": { "
+                 << "\"environmentPath\": \"" << EscapeJson(JsonPathString(preset.environment.environmentPath, projectDirectory)) << "\", "
+                 << "\"rotationYaw\": " << preset.environment.rotationYaw << ", "
+                 << "\"intensity\": " << preset.environment.intensity << ", "
+                 << "\"backgroundMode\": \"" << EscapeJson(BackgroundModeJsonName(preset.environment.backgroundMode)) << "\", "
+                 << "\"sunDirection\": ["
+                 << preset.environment.sunDirection[0] << ", "
+                 << preset.environment.sunDirection[1] << ", "
+                 << preset.environment.sunDirection[2] << "], "
+                 << "\"sunColor\": ["
+                 << preset.environment.sunColor[0] << ", "
+                 << preset.environment.sunColor[1] << ", "
+                 << preset.environment.sunColor[2] << "], "
+                 << "\"sunIntensity\": " << preset.environment.sunIntensity << " }, "
+                 << "\"viewSettings\": { "
+                 << "\"exposure\": " << preset.viewSettings.exposure << ", "
+                 << "\"toneMapper\": \"" << EscapeJson(ToneMapperJsonName(preset.viewSettings.toneMapper)) << "\", "
+                 << "\"gamma\": " << preset.viewSettings.gamma << ", "
+                 << "\"displayMode\": \"" << EscapeJson(DisplayModeJsonName(preset.viewSettings.displayMode)) << "\", "
+                 << "\"turntableEnabled\": " << (preset.viewSettings.turntableEnabled ? "true" : "false") << ", "
+                 << "\"turntableSpeed\": " << preset.viewSettings.turntableSpeed << " } }";
+            json << (i + 1 < m_project.lookDevPresets.size() ? "," : "") << "\n";
+        }
+        json << "  ],\n";
         json << "  \"shaderSourcePath\": \"" << EscapeJson(JsonPathString(m_activeShaderSet.sourcePath, projectDirectory)) << "\",\n";
         json << "  \"vertexEntry\": \"" << EscapeJson(WideToUtf8(m_activeShaderSet.vertexEntry)) << "\",\n";
         json << "  \"pixelEntry\": \"" << EscapeJson(WideToUtf8(m_activeShaderSet.pixelEntry)) << "\",\n";
@@ -2149,25 +2501,43 @@ void RenderBuilderApp::LoadProjectFromDisk(const std::filesystem::path& path)
         const JsonValue* lookDevEnvironment = FindMember(root, "lookDevEnvironment");
         if (lookDevEnvironment && lookDevEnvironment->type == JsonValue::Type::Object)
         {
-            const std::filesystem::path environmentPath = ResolveProjectPath(JsonStringOr(*lookDevEnvironment, "environmentPath"), projectDirectory);
-            loadedProject.lookDevEnvironment.environmentPath = environmentPath.wstring();
-            loadedProject.lookDevEnvironment.rotationYaw = static_cast<float>(JsonNumberOr(*lookDevEnvironment, "rotationYaw", loadedProject.lookDevEnvironment.rotationYaw));
-            loadedProject.lookDevEnvironment.intensity = static_cast<float>(JsonNumberOr(*lookDevEnvironment, "intensity", loadedProject.lookDevEnvironment.intensity));
-            loadedProject.lookDevEnvironment.backgroundMode = BackgroundModeFromJson(JsonStringOr(*lookDevEnvironment, "backgroundMode"), loadedProject.lookDevEnvironment.backgroundMode);
-            loadedProject.lookDevEnvironment.sunDirection = JsonFloat3Or(*lookDevEnvironment, "sunDirection", loadedProject.lookDevEnvironment.sunDirection);
-            loadedProject.lookDevEnvironment.sunColor = JsonFloat3Or(*lookDevEnvironment, "sunColor", loadedProject.lookDevEnvironment.sunColor);
-            loadedProject.lookDevEnvironment.sunIntensity = static_cast<float>(JsonNumberOr(*lookDevEnvironment, "sunIntensity", loadedProject.lookDevEnvironment.sunIntensity));
-            AppendMissingAssetDiagnostic(assetDiagnostics, "environment", environmentPath);
+            loadedProject.lookDevEnvironment = JsonLookDevEnvironmentOr(*lookDevEnvironment, projectDirectory, loadedProject.lookDevEnvironment);
+            AppendMissingAssetDiagnostic(assetDiagnostics, "environment", loadedProject.lookDevEnvironment.environmentPath);
         }
         const JsonValue* lookDevViewSettings = FindMember(root, "lookDevViewSettings");
         if (lookDevViewSettings && lookDevViewSettings->type == JsonValue::Type::Object)
         {
-            loadedProject.lookDevViewSettings.exposure = static_cast<float>(JsonNumberOr(*lookDevViewSettings, "exposure", loadedProject.lookDevViewSettings.exposure));
-            loadedProject.lookDevViewSettings.toneMapper = ToneMapperFromJson(JsonStringOr(*lookDevViewSettings, "toneMapper"), loadedProject.lookDevViewSettings.toneMapper);
-            loadedProject.lookDevViewSettings.gamma = static_cast<float>(JsonNumberOr(*lookDevViewSettings, "gamma", loadedProject.lookDevViewSettings.gamma));
-            loadedProject.lookDevViewSettings.displayMode = DisplayModeFromJson(JsonStringOr(*lookDevViewSettings, "displayMode"), loadedProject.lookDevViewSettings.displayMode);
-            loadedProject.lookDevViewSettings.turntableEnabled = JsonBoolOr(*lookDevViewSettings, "turntableEnabled", loadedProject.lookDevViewSettings.turntableEnabled);
-            loadedProject.lookDevViewSettings.turntableSpeed = static_cast<float>(JsonNumberOr(*lookDevViewSettings, "turntableSpeed", loadedProject.lookDevViewSettings.turntableSpeed));
+            loadedProject.lookDevViewSettings = JsonLookDevViewSettingsOr(*lookDevViewSettings, loadedProject.lookDevViewSettings);
+        }
+        loadedProject.activeLookDevPresetName = JsonStringOr(root, "activeLookDevPreset", loadedProject.activeLookDevPresetName);
+        const JsonValue* lookDevPresets = FindMember(root, "lookDevPresets");
+        if (lookDevPresets && lookDevPresets->type == JsonValue::Type::Array)
+        {
+            for (const JsonValue& presetValue : lookDevPresets->array)
+            {
+                if (presetValue.type != JsonValue::Type::Object)
+                {
+                    continue;
+                }
+
+                LookDevPreset preset;
+                preset.name = JsonStringOr(presetValue, "name", "LookDev Preset");
+                preset.skyTopColor = JsonFloat4Or(presetValue, "skyTopColor", preset.skyTopColor);
+                preset.skyHorizonColor = JsonFloat4Or(presetValue, "skyHorizonColor", preset.skyHorizonColor);
+                preset.preserveEnvironmentPath = JsonBoolOr(presetValue, "preserveEnvironmentPath", preset.preserveEnvironmentPath);
+                const JsonValue* presetEnvironment = FindMember(presetValue, "environment");
+                if (presetEnvironment && presetEnvironment->type == JsonValue::Type::Object)
+                {
+                    preset.environment = JsonLookDevEnvironmentOr(*presetEnvironment, projectDirectory, preset.environment);
+                    AppendMissingAssetDiagnostic(assetDiagnostics, "preset environment '" + preset.name + "'", preset.environment.environmentPath);
+                }
+                const JsonValue* presetViewSettings = FindMember(presetValue, "viewSettings");
+                if (presetViewSettings && presetViewSettings->type == JsonValue::Type::Object)
+                {
+                    preset.viewSettings = JsonLookDevViewSettingsOr(*presetViewSettings, preset.viewSettings);
+                }
+                loadedProject.lookDevPresets.push_back(preset);
+            }
         }
         const std::string activeShaderSetName = JsonStringOr(root, "activeShaderSet", LookDevShaderSetName);
 
@@ -2311,6 +2681,7 @@ void RenderBuilderApp::LoadProjectFromDisk(const std::filesystem::path& path)
         }
 
         m_project = loadedProject;
+        EnsureLookDevPresets();
         if (m_project.materialAssignments.empty())
         {
             m_project.materialAssignments = importedAssignments;

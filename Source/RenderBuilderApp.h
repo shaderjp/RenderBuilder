@@ -6,6 +6,7 @@
 #include "ShaderCompiler.h"
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -26,9 +27,9 @@ private:
     void Initialize(HINSTANCE instance, int showCommand);
     void Tick();
     void RequestResize(UINT width, UINT height);
-    void ApplyPendingResize();
+    bool ApplyPendingResize();
     void RequestSceneTargetResize(UINT width, UINT height);
-    void ApplyPendingSceneTargetResize();
+    bool ApplyPendingSceneTargetResize();
     void DrawUi();
     void DrawDockspace();
     void DrawViewportPanel();
@@ -59,6 +60,11 @@ private:
     void MarkProjectDirty();
     void SetProjectDirty(bool dirty);
     void ApplyLookDevSettings();
+    void EnsureLookDevPresets();
+    LookDevPreset CaptureCurrentLookDevPreset(const std::string& name) const;
+    void UpsertLookDevPreset(const LookDevPreset& preset);
+    void ApplyLookDevPreset(std::size_t index);
+    void MarkLookDevCustom();
     void UpdateWindowTitle() const;
     const SceneMaterial* FindSceneMaterial(const std::string& materialName) const;
     std::wstring ImportedTexturePath(const std::string& materialName, std::size_t textureSlot) const;
@@ -82,6 +88,8 @@ private:
     bool m_pendingSceneTargetResize = false;
     UINT m_pendingSceneTargetWidth = 0;
     UINT m_pendingSceneTargetHeight = 0;
+    std::uint32_t m_resizeDeferFrames = 0;
+    std::uint32_t m_sceneTargetResizeDeferFrames = 0;
 
     std::filesystem::path m_rootDirectory;
     std::unique_ptr<DxcShaderCompiler> m_shaderCompiler;
@@ -106,6 +114,7 @@ private:
     bool m_shaderDirty = false;
     bool m_projectDirty = false;
     std::vector<std::filesystem::path> m_recentProjects;
+    char m_lookDevPresetNameBuffer[64] = "Custom Preset";
 
     std::chrono::high_resolution_clock::time_point m_lastTick;
 };

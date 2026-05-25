@@ -14,6 +14,7 @@
 #include <cwctype>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <stdexcept>
 
@@ -44,6 +45,8 @@ constexpr UINT MaterialTextureRoughnessBit = 1u << TextureSlotRoughness;
 constexpr UINT MaterialTextureMetallicBit = 1u << TextureSlotMetallic;
 constexpr UINT MaterialTextureOcclusionBit = 1u << TextureSlotOcclusion;
 constexpr UINT MaterialTextureEmissiveBit = 1u << TextureSlotEmissive;
+constexpr DWORD GpuWaitTimeoutMs = 5000;
+constexpr DWORD ResizeGpuWaitTimeoutMs = 100;
 
 D3D12_RESOURCE_DESC BufferDesc(UINT64 size)
 {
@@ -117,6 +120,22 @@ std::string HResultMessage(HRESULT hr)
     std::ostringstream message;
     message << "HRESULT 0x" << std::hex << static_cast<unsigned long>(hr);
     return message.str();
+}
+
+void TraceRenderBuilder(const std::string& message)
+{
+    const std::string debugLine = "RenderBuilder: " + message + "\n";
+    OutputDebugStringA(debugLine.c_str());
+
+    try
+    {
+        std::filesystem::create_directories("Bin/Logs");
+        std::ofstream log("Bin/Logs/RenderBuilder.log", std::ios::app);
+        log << GetTickCount64() << " " << message << "\n";
+    }
+    catch (...)
+    {
+    }
 }
 
 float ClampFloat(float value, float minimum, float maximum)
@@ -314,7 +333,8 @@ void D3D12Backend::CreateDeviceObjects(HWND hwnd, UINT width, UINT height)
     ThrowIfFailed(m_commandList->Close(), "Initial command list close failed.");
 
     ThrowIfFailed(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)), "CreateFence failed.");
-    m_fenceValues[m_frameIndex] = 1;
+    m_fenceValues.fill(0);
+    m_nextFenceValue = 1;
     m_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     if (!m_fenceEvent)
     {
@@ -1223,41 +1243,72 @@ void D3D12Backend::ImGuiSrvFree(::ImGui_ImplDX12_InitInfo*, D3D12_CPU_DESCRIPTOR
 {
 }
 
-void D3D12Backend::Resize(UINT width, UINT height)
+bool D3D12Backend::Resize(UINT width, UINT height)
 {
     if (!m_swapChain || width == 0 || height == 0)
     {
-        return;
+        return true;
     }
     if (width == m_width && height == m_height)
     {
-        return;
+        return true;
     }
 
-    WaitForGpu();
+    {
+        std::ostringstream message;
+        message << "Resize begin backbuffer " << m_width << "x" << m_height << " -> " << width << "x" << height;
+        TraceRenderBuilder(message.str());
+    }
+
+    if (!TryWaitForGpu("Resize backbuffer", ResizeGpuWaitTimeoutMs))
+    {
+        TraceRenderBuilder("Resize deferred: GPU did not become idle before ResizeBuffers.");
+        return false;
+    }
+
+    TraceRenderBuilder("Resize releasing render targets.");
     ReleaseRenderTargets();
     m_width = width;
     m_height = height;
+    TraceRenderBuilder("ResizeBuffers begin.");
     ThrowIfFailed(m_swapChain->ResizeBuffers(FrameCount, width, height, m_backBufferFormat, 0), "ResizeBuffers failed.");
+    TraceRenderBuilder("ResizeBuffers end.");
     m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
     CreateRenderTargets();
+    m_traceRenderFrames = 4;
+    TraceRenderBuilder("Resize end.");
+    return true;
 }
 
-void D3D12Backend::ResizeSceneTarget(UINT width, UINT height)
+bool D3D12Backend::ResizeSceneTarget(UINT width, UINT height)
 {
     width = std::max(width, 1u);
     height = std::max(height, 1u);
     if (!m_device || (width == m_sceneWidth && height == m_sceneHeight))
     {
-        return;
+        return true;
     }
 
-    WaitForGpu();
+    {
+        std::ostringstream message;
+        message << "ResizeSceneTarget begin " << m_sceneWidth << "x" << m_sceneHeight << " -> " << width << "x" << height;
+        TraceRenderBuilder(message.str());
+    }
+
+    if (!TryWaitForGpu("Resize scene target", ResizeGpuWaitTimeoutMs))
+    {
+        TraceRenderBuilder("ResizeSceneTarget deferred: GPU did not become idle before scene target recreate.");
+        return false;
+    }
+
     m_sceneTarget.Reset();
     m_sceneDepth.Reset();
     m_sceneWidth = width;
     m_sceneHeight = height;
     CreateSceneTarget();
+    m_traceRenderFrames = 4;
+    TraceRenderBuilder("ResizeSceneTarget end.");
+    return true;
 }
 
 void D3D12Backend::UpdateConstants(float deltaSeconds)
@@ -1659,9 +1710,37 @@ void D3D12Backend::Render(float deltaSeconds, const std::vector<std::uint8_t>&, 
         return;
     }
 
+    const bool traceRender = m_traceRenderFrames > 0;
+    if (traceRender)
+    {
+        std::ostringstream message;
+        message << "Render begin frame=" << m_frameNumber
+                << " frameIndex=" << m_frameIndex
+                << " backbuffer=" << m_width << "x" << m_height
+                << " scene=" << m_sceneWidth << "x" << m_sceneHeight;
+        TraceRenderBuilder(message.str());
+    }
+
+    const UINT64 frameFenceValue = m_fenceValues[m_frameIndex];
+    if (frameFenceValue != 0 && m_fence && m_fence->GetCompletedValue() < frameFenceValue)
+    {
+        if (traceRender)
+        {
+            std::ostringstream message;
+            message << "Render skipped: frame allocator is still busy"
+                    << " frameIndex=" << m_frameIndex
+                    << " waitFence=" << frameFenceValue
+                    << " completed=" << m_fence->GetCompletedValue();
+            TraceRenderBuilder(message.str());
+        }
+        ImGui::Render();
+        return;
+    }
+
     const auto startTime = std::chrono::high_resolution_clock::now();
     UpdateConstants(deltaSeconds);
 
+    if (traceRender) { TraceRenderBuilder("Render reset command list."); }
     ThrowIfFailed(m_commandAllocators[m_frameIndex]->Reset(), "Command allocator reset failed.");
     ThrowIfFailed(m_commandList->Reset(m_commandAllocators[m_frameIndex].Get(), nullptr), "Command list reset failed.");
 
@@ -1723,6 +1802,7 @@ void D3D12Backend::Render(float deltaSeconds, const std::vector<std::uint8_t>&, 
     m_commandList->ResourceBarrier(1, &sceneToSrv);
     m_sceneTargetState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
+    if (traceRender) { TraceRenderBuilder("Render scene target complete."); }
     D3D12_RESOURCE_BARRIER backBufferToRtv = Transition(m_renderTargets[m_frameIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
     m_commandList->ResourceBarrier(1, &backBufferToRtv);
 
@@ -1736,43 +1816,104 @@ void D3D12Backend::Render(float deltaSeconds, const std::vector<std::uint8_t>&, 
 
     D3D12_RESOURCE_BARRIER backBufferToPresent = Transition(m_renderTargets[m_frameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
     m_commandList->ResourceBarrier(1, &backBufferToPresent);
+    if (traceRender) { TraceRenderBuilder("Render close command list."); }
     ThrowIfFailed(m_commandList->Close(), "Command list close failed.");
 
     ID3D12CommandList* commandLists[] = { m_commandList.Get() };
     m_commandQueue->ExecuteCommandLists(1, commandLists);
+    if (traceRender) { TraceRenderBuilder("Render present begin."); }
     ThrowIfFailed(m_swapChain->Present(1, 0), "Present failed.");
+    if (traceRender) { TraceRenderBuilder("Render present end."); }
+    if (traceRender) { TraceRenderBuilder("Render move next frame begin."); }
     MoveToNextFrame();
+    if (traceRender) { TraceRenderBuilder("Render move next frame end."); }
 
     const auto endTime = std::chrono::high_resolution_clock::now();
     m_lastFrameMs = std::chrono::duration<double, std::milli>(endTime - startTime).count();
     ++m_frameNumber;
+    if (m_traceRenderFrames > 0)
+    {
+        --m_traceRenderFrames;
+    }
 }
 
 void D3D12Backend::WaitForGpu()
 {
+    if (!TryWaitForGpu("GPU wait", GpuWaitTimeoutMs))
+    {
+        throw std::runtime_error("GPU wait timed out. See Bin/Logs/RenderBuilder.log for the last D3D12 operation.");
+    }
+}
+
+bool D3D12Backend::TryWaitForGpu(const char* reason, DWORD timeoutMs)
+{
     if (!m_commandQueue || !m_fence)
     {
-        return;
+        return true;
     }
 
-    ThrowIfFailed(m_commandQueue->Signal(m_fence.Get(), m_fenceValues[m_frameIndex]), "Fence signal failed.");
-    ThrowIfFailed(m_fence->SetEventOnCompletion(m_fenceValues[m_frameIndex], m_fenceEvent), "SetEventOnCompletion failed.");
-    WaitForSingleObjectEx(m_fenceEvent, INFINITE, FALSE);
-    ++m_fenceValues[m_frameIndex];
+    const auto startTime = std::chrono::high_resolution_clock::now();
+    const UINT64 fenceValue = m_nextFenceValue++;
+    ThrowIfFailed(m_commandQueue->Signal(m_fence.Get(), fenceValue), "Fence signal failed.");
+
+    if (m_fence->GetCompletedValue() < fenceValue)
+    {
+        ThrowIfFailed(m_fence->SetEventOnCompletion(fenceValue, m_fenceEvent), "SetEventOnCompletion failed.");
+        const DWORD waitResult = WaitForSingleObjectEx(m_fenceEvent, timeoutMs, FALSE);
+        if (waitResult == WAIT_TIMEOUT)
+        {
+            std::ostringstream message;
+            message << "GPU wait timeout"
+                    << " reason='" << (reason ? reason : "unknown") << "'"
+                    << " timeoutMs=" << timeoutMs
+                    << " frameIndex=" << m_frameIndex
+                    << " fenceValue=" << fenceValue
+                    << " completed=" << m_fence->GetCompletedValue();
+            if (m_device)
+            {
+                const HRESULT removedReason = m_device->GetDeviceRemovedReason();
+                if (FAILED(removedReason))
+                {
+                    message << " deviceRemoved=" << HResultMessage(removedReason);
+                }
+            }
+            TraceRenderBuilder(message.str());
+            return false;
+        }
+        if (waitResult != WAIT_OBJECT_0)
+        {
+            std::ostringstream message;
+            message << "GPU wait failed"
+                    << " reason='" << (reason ? reason : "unknown") << "'"
+                    << " waitResult=" << waitResult
+                    << " lastError=" << GetLastError();
+            TraceRenderBuilder(message.str());
+            throw std::runtime_error("GPU wait failed.");
+        }
+    }
+
+    m_fenceValues.fill(0);
+    const auto endTime = std::chrono::high_resolution_clock::now();
+    const double elapsedMs = std::chrono::duration<double, std::milli>(endTime - startTime).count();
+    if (elapsedMs > 50.0)
+    {
+        std::ostringstream message;
+        message << "GPU wait slow"
+                << " reason='" << (reason ? reason : "unknown") << "'"
+                << " elapsedMs=" << elapsedMs
+                << " frameIndex=" << m_frameIndex
+                << " fenceValue=" << fenceValue;
+        TraceRenderBuilder(message.str());
+    }
+    return true;
 }
 
 void D3D12Backend::MoveToNextFrame()
 {
-    const UINT64 currentFenceValue = m_fenceValues[m_frameIndex];
-    ThrowIfFailed(m_commandQueue->Signal(m_fence.Get(), currentFenceValue), "Fence signal failed.");
+    const UINT submittedFrameIndex = m_frameIndex;
+    const UINT64 fenceValue = m_nextFenceValue++;
+    ThrowIfFailed(m_commandQueue->Signal(m_fence.Get(), fenceValue), "Fence signal failed.");
+    m_fenceValues[submittedFrameIndex] = fenceValue;
     m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
-
-    if (m_fence->GetCompletedValue() < m_fenceValues[m_frameIndex])
-    {
-        ThrowIfFailed(m_fence->SetEventOnCompletion(m_fenceValues[m_frameIndex], m_fenceEvent), "SetEventOnCompletion failed.");
-        WaitForSingleObjectEx(m_fenceEvent, INFINITE, FALSE);
-    }
-
-    m_fenceValues[m_frameIndex] = currentFenceValue + 1;
 }
 }
