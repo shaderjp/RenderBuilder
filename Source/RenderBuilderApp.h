@@ -10,10 +10,38 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace rb
 {
+enum class AssetKind
+{
+    Scene,
+    Texture,
+    Environment,
+    Shader,
+    Project,
+    Other
+};
+
+struct AssetBrowserItem
+{
+    AssetKind kind = AssetKind::Other;
+    std::filesystem::path path;
+    std::string source;
+    bool referenced = false;
+    bool missing = false;
+};
+
+struct ShaderSetRuntimeStatus
+{
+    bool compileAttempted = false;
+    bool lastCompileSucceeded = false;
+    bool hasLastGoodPso = false;
+    std::string lastDiagnostics;
+};
+
 class RenderBuilderApp
 {
 public:
@@ -36,13 +64,24 @@ private:
     void DrawShaderEditorPanel();
     void DrawMaterialInspectorPanel();
     void DrawAssetBrowserPanel();
+    void DrawAssetCatalogPanel();
+    void DrawShaderSetManagement();
+    void DrawMaterialShaderAssignmentOverview();
     void DrawDiagnosticsPanel();
     void DrawStatsPanel();
     void CompileActiveShader();
+    void CompileAllShaderSets();
     bool CompileShaderSet(ShaderSet& shaderSet, std::vector<std::uint8_t>* vertexShader, std::vector<std::uint8_t>* pixelShader, std::string& diagnostics);
     void SynchronizeActiveShaderSet();
     void SelectShaderSet(std::size_t index);
     void CreateShaderSetFromActive();
+    void DuplicateActiveShaderSet();
+    void DeleteActiveShaderSet();
+    void RenameActiveShaderSet(const std::string& newName);
+    bool ShaderSetNameExists(const std::string& name, std::size_t excludeIndex = static_cast<std::size_t>(-1)) const;
+    std::string UniqueShaderSetName(const std::string& baseName) const;
+    std::size_t ShaderSetUsageCount(const std::string& name) const;
+    const ShaderSetRuntimeStatus* ShaderStatusFor(const std::string& name) const;
     void HandleViewportCameraControls();
     void LoadDefaultShader();
     void LoadShaderFromDisk(const std::filesystem::path& path);
@@ -66,6 +105,14 @@ private:
     void ApplyLookDevPreset(std::size_t index);
     void MarkLookDevCustom();
     void UpdateWindowTitle() const;
+    void RefreshAssetCatalog();
+    void AddAssetCatalogItem(AssetKind kind, const std::filesystem::path& path, const std::string& source, bool referenced);
+    void AddReferencedAsset(AssetKind kind, const std::filesystem::path& path, const std::string& source);
+    AssetKind ClassifyAssetPath(const std::filesystem::path& path) const;
+    bool AssetMatchesFilter(const AssetBrowserItem& item) const;
+    void LoadSelectedAsset();
+    void UseSelectedAssetAsEnvironment();
+    void AssignSelectedTextureToMaterialSlot();
     const SceneMaterial* FindSceneMaterial(const std::string& materialName) const;
     std::wstring ImportedTexturePath(const std::string& materialName, std::size_t textureSlot) const;
     std::wstring EffectiveTexturePath(const MaterialAssignment& assignment, std::size_t textureSlot) const;
@@ -115,6 +162,14 @@ private:
     bool m_projectDirty = false;
     std::vector<std::filesystem::path> m_recentProjects;
     char m_lookDevPresetNameBuffer[64] = "Custom Preset";
+    std::vector<AssetBrowserItem> m_assetCatalog;
+    std::filesystem::path m_selectedAssetPath;
+    int m_assetKindFilter = 0;
+    std::size_t m_assetMaterialIndex = 0;
+    std::size_t m_assetTextureSlot = 0;
+    char m_assetSearchBuffer[128] = {};
+    bool m_assetCatalogDirty = true;
+    std::unordered_map<std::string, ShaderSetRuntimeStatus> m_shaderSetStatus;
 
     std::chrono::high_resolution_clock::time_point m_lastTick;
 };

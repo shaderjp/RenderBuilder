@@ -270,6 +270,7 @@ SceneImportResult SceneImporter::ImportScene(const std::wstring& path)
 
     const std::uint32_t materialCount = (std::max)(1u, sourceScene->mNumMaterials);
     result.scene.materials.reserve(materialCount);
+    std::size_t packedOrmMaterialCount = 0;
     for (std::uint32_t materialIndex = 0; materialIndex < materialCount; ++materialIndex)
     {
         const aiMaterial* material = materialIndex < sourceScene->mNumMaterials ? sourceScene->mMaterials[materialIndex] : nullptr;
@@ -291,6 +292,18 @@ SceneImportResult SceneImporter::ImportScene(const std::wstring& path)
         if (sceneMaterial.occlusionTexturePath.empty())
         {
             sceneMaterial.occlusionTexturePath = ResolveTexturePath(scenePath.parent_path(), material, aiTextureType_LIGHTMAP);
+        }
+        const std::wstring specularTexturePath = ResolveTexturePath(scenePath.parent_path(), material, aiTextureType_SPECULAR);
+        if (!specularTexturePath.empty()
+            && sceneMaterial.roughnessTexturePath.empty()
+            && sceneMaterial.metallicTexturePath.empty()
+            && sceneMaterial.occlusionTexturePath.empty())
+        {
+            sceneMaterial.occlusionTexturePath = specularTexturePath;
+            sceneMaterial.roughnessTexturePath = specularTexturePath;
+            sceneMaterial.metallicTexturePath = specularTexturePath;
+            sceneMaterial.assignment.packedOcclusionRoughnessMetallic = true;
+            ++packedOrmMaterialCount;
         }
         sceneMaterial.emissiveTexturePath = ResolveTexturePath(scenePath.parent_path(), material, aiTextureType_EMISSIVE);
         sceneMaterial.hasBaseColorTexture = !sceneMaterial.baseColorTexturePath.empty();
@@ -334,6 +347,11 @@ SceneImportResult SceneImporter::ImportScene(const std::wstring& path)
                 << result.scene.indices.size() << " indices, "
                 << result.scene.draws.size() << " draws, and "
                 << result.scene.materials.size() << " materials.";
+    if (packedOrmMaterialCount > 0)
+    {
+        diagnostics << "\nDetected " << packedOrmMaterialCount
+                    << " materials using packed Specular/ORM maps (R=occlusion, G=roughness, B=metalness).";
+    }
     result.diagnostics = diagnostics.str();
     result.succeeded = true;
     return result;

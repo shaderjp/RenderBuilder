@@ -2,6 +2,8 @@
 
 このページでは、RenderBuilder でシーンファイルを読み込み、Viewport で確認しながら shader / material / LookDev 設定を調整する基本操作を説明します。
 
+Sponza / Bistro など大型 scene のスクリーンショットと確認ポイントは [シーン例とスクリーンショット](SceneExamples.ja.md) に分けています。
+
 ![モデル読み込み後の全体画面](<../images/RenderBuilder Shader Editor 2026_05_24 23_24_17.png>)
 
 ## 画面構成
@@ -55,6 +57,23 @@ imported material が texture を持っている場合は、その texture が�
 
 scene を開いていない場合は、組み込み preview cube が表示されます。shader や camera 操作の確認だけであれば、この状態でも利用できます。
 
+## Asset Browser
+
+Scene / Asset Browser の `Assets` section では、`Assets/`、`Shaders/`、現在の project / scene 周辺、Project JSON が参照している asset を一覧できます。
+
+| 操作 | 動作 |
+| --- | --- |
+| Refresh Assets | asset 一覧を再スキャンします。 |
+| Filter | Models / Textures / HDRI / Shaders / Projects / Missing で表示を絞り込みます。 |
+| Search | file name、path、source label を検索します。 |
+| Load Model | 選択した model asset を scene として読み込みます。 |
+| Use as HDRI | 選択した HDRI / DDS asset を environment texture として読み込みます。 |
+| Load Into Active Shader | 選択した HLSL を active shader set に読み込み、compile します。 |
+| Open Project | 選択した `.renderbuilder.json` を開きます。 |
+| Assign Texture Slot | 選択した texture asset を指定 material / texture slot の override として割り当てます。 |
+
+missing asset は asset 一覧上で赤く表示され、`Missing` filter でまとめて確認できます。Project JSON を開いたときに見つからない scene / texture / HDRI / shader source も、ここから path 単位で確認できます。
+
 ## Viewport 操作
 
 Viewport 内の描画領域に mouse cursor があるとき、または Viewport が active/focused のときだけ camera 操作が反映されます。左 drag で model を回転しても、Viewport の canvas 外であれば ImGui window の移動が優先されます。
@@ -90,22 +109,29 @@ Material Inspector では次の値を編集できます。
 | Alpha Mode / Alpha Cutoff | Opaque / Mask / Blend と mask threshold です。 |
 | Normal Strength | normal map の強さです。 |
 | Flip Normal Green | DirectX / OpenGL 系 normal map の Y 向き違いを補正します。 |
+| Packed ORM | 1枚の texture に occlusion / roughness / metallic が詰められた map を使います。`R=AO`、`G=Roughness`、`B=Metallic` として評価されます。Bistro_v5_2 の `Specular` DDS はこの形式として自動検出されます。 |
 
 Shader compile に失敗した場合、Viewport は最後に成功した PSO を維持します。エラー内容は Compile Diagnostics に表示されるため、preview を壊さずに shader を修正できます。
 
 ## Shader Editor の基本
 
-Shader Editor では、active shader set の HLSL source、VS entry、PS entry を編集できます。
+Shader Editor では、active shader set の HLSL source、VS / PS entry、VS / PS profile、material への shader set 割り当てを編集できます。
 
 | 操作 | 動作 |
 | --- | --- |
 | `Build > Compile Shader` | active shader set を compile します。 |
+| `Build > Compile All Shader Sets` | すべての shader set を compile します。 |
 | `Ctrl+Enter` | active shader set を compile します。 |
 | `Compile` button | active shader set を compile します。 |
+| `Compile All` button | project 内の shader set をまとめて compile します。 |
 | `Open Shader...` | HLSL file を読み込みます。 |
 | `Reload Default` | default raster shader を読み込みます。 |
 | `Reload LookDev PBR` | LookDev PBR shader を読み込みます。 |
 | `New` | 新しい shader set を作成します。 |
+| `Duplicate` | active shader set を複製し、memory source として編集できる状態にします。 |
+| `Delete` | active shader set を削除します。使用中の material は別の shader set に退避されます。 |
+
+`Shader Set Manager` では各 shader set の compile 結果、last-good PSO の有無、使用 material 数、VS / PS profile を一覧できます。`Material Shader Assignments` では material ごとに shader set を切り替えられ、現在の PSO が active / last-good / fallback のどれで描画されるかを確認できます。
 
 初期 entry point は `VSMain` / `PSMain` です。標準 ABI を使う shader は `Shaders/RenderBuilderShaderABI.hlsli` を include します。
 
@@ -185,13 +211,8 @@ Project JSON の概略は次のような形です。
 | shader compile 後に見た目が変わらない | Compile Diagnostics で compile 成功/失敗を確認してください。失敗時は最後に成功した PSO が維持されます。 |
 | Viewport の camera が動かない | mouse cursor が Viewport の描画領域上にあるか、Viewport window が focused かを確認してください。 |
 
-## 今後追加したいスクリーンショット
+## 関連ドキュメント
 
-この初版では、全体 UI と model 読み込み後の状態を掲載しています。次に documentation の精度を上げるなら、次の screenshot があると便利です。
-
-| Screenshot | 目的 |
+| Document | 内容 |
 | --- | --- |
-| HDRI Background 使用中の Viewport | environment lighting と background mode の説明用。 |
-| Material texture slot override 中の Material Inspector | texture slot と override の説明用。 |
-| Project open 後に復元された scene | Project JSON 保存復元の説明用。 |
-| invalid shader compile の Diagnostics | shader 開発時の失敗時挙動の説明用。 |
+| [シーン例とスクリーンショット](SceneExamples.ja.md) | glTF Sponza / Bistro_v5_2 の大型 scene preview、packed ORM、large scene checklist。 |

@@ -22,6 +22,7 @@ cbuffer RenderBuilderMaterial : register(b1)
     float gAlphaCutoff;
     float gAlphaMode;
     float4 gEmissiveFactor;
+    float gPackedOcclusionRoughnessMetallic;
 };
 
 cbuffer RenderBuilderLookDev : register(b2)

@@ -4,9 +4,20 @@
 
 RenderBuilder is a Windows / Visual Studio 2022 shader editor prototype for runtime HLSL development.
 
+## Screenshots
+
+The current D3D12 preview path is being exercised with both glTF Sponza-style scenes and the Amazon Lumberyard Bistro FBX data.
+
+![Large scene preview](<images/RenderBuilder Shader Editor - _Untitled 2026_05_25 22_05_21.png>)
+
+![Bistro / Sponza material preview](<images/RenderBuilder Shader Editor - _Untitled 2026_05_25 22_07_33.png>)
+
+![Bistro / Sponza LookDev preview](<images/RenderBuilder Shader Editor - _Untitled 2026_05_25 22_08_25.png>)
+
 ## Documentation
 
 - [Scene files and controls (Japanese)](Docs/SceneAndControls.ja.md)
+- [Scene examples and screenshots (Japanese)](Docs/SceneExamples.ja.md)
 
 ## Current MVP
 
@@ -16,19 +27,22 @@ RenderBuilder is a Windows / Visual Studio 2022 shader editor prototype for runt
 - Dear ImGui docking UI with Viewport, Shader Editor, Material Inspector, Scene / Asset Browser, Compile Diagnostics, and Renderer Stats panels.
 - Fixed shader ABI in `Shaders/RenderBuilderShaderABI.hlsli`.
 - Successful shader compiles rebuild the D3D12 PSO; failed compiles keep the last valid PSO and show diagnostics.
+- Shader Set Manager with duplicate/delete, compile-all, profile editing, per-material assignment overview, and last-good PSO status.
 - Built-in preview cube plus Assimp scene import for glTF/GLB, FBX, and OBJ preview meshes.
 - DirectXTex material texture slot upload for DDS/TGA/HDR/WIC images, with a checker fallback.
 - Imported materials are rendered through per-material draw routing and shader set assignment.
+- LookDev PBR preview with HDRI/SkyColor background, sun light, tone mapping, display modes, turntable, snapshots, and Project JSON persistence.
+- Bistro-style packed ORM support: `Specular` DDS maps can be evaluated as `R=AO`, `G=Roughness`, `B=Metallic`.
 
 ## LookDev Roadmap
 
-- D3D12-first PBR preview using a dedicated `LookDevPBR.hlsl` shader.
-- HDRI + Sun environment controls, tone mapping, debug display modes, and turntable preview.
-- Project JSON persists scene, material slots, shader assignments, camera, sky, environment, and view settings.
+- Improve large-scene responsiveness for Sponza/Bistro-scale assets with progressive texture upload and clearer load diagnostics.
+- Add richer material debug views for texture slots, packed maps, tangent basis, alpha, and emissive contribution.
+- Keep Vulkan/backend-neutral project data aligned with the D3D12 LookDev workflow.
 
 ## Planned Milestones
 
-- M2: LookDev PBR/IBL workflow, richer shader set management, and snapshot/export polish.
+- M2: LookDev PBR/IBL workflow, large-scene polish, richer material diagnostics, and snapshot/export polish.
 - M3: Vulkan backend parity using Vulkan SDK DXC for SPIR-V.
 - M4: meshoptimizer meshlet cache plus D3D12/Vulkan Mesh Shader preview.
 - M5: DXR/Vulkan Ray Tracing experiments.

@@ -175,9 +175,17 @@ float4 PSMain(RBPixelInput input) : SV_Target0
         ? gBaseColorTexture.Sample(gLinearWrapSampler, input.texcoord).rgb
         : float3(0.75, 0.72, 0.68);
     const float3 baseColor = saturate(baseTexture * gBaseColorFactor.rgb);
-    const float roughnessSample = ((gMaterialTextureMask & RB_TEXTURE_ROUGHNESS) != 0) ? gRoughnessTexture.Sample(gLinearWrapSampler, input.texcoord).r : 1.0;
-    const float metallicSample = ((gMaterialTextureMask & RB_TEXTURE_METALLIC) != 0) ? gMetallicTexture.Sample(gLinearWrapSampler, input.texcoord).r : 1.0;
-    const float aoSample = ((gMaterialTextureMask & RB_TEXTURE_OCCLUSION) != 0) ? gOcclusionTexture.Sample(gLinearWrapSampler, input.texcoord).r : 1.0;
+    const bool hasPackedOrm = gPackedOcclusionRoughnessMetallic > 0.5 && ((gMaterialTextureMask & RB_TEXTURE_ROUGHNESS) != 0);
+    const float3 packedOrmSample = hasPackedOrm ? gRoughnessTexture.Sample(gLinearWrapSampler, input.texcoord).rgb : float3(1.0, 1.0, 1.0);
+    const float roughnessSample = hasPackedOrm
+        ? packedOrmSample.g
+        : (((gMaterialTextureMask & RB_TEXTURE_ROUGHNESS) != 0) ? gRoughnessTexture.Sample(gLinearWrapSampler, input.texcoord).r : 1.0);
+    const float metallicSample = hasPackedOrm
+        ? packedOrmSample.b
+        : (((gMaterialTextureMask & RB_TEXTURE_METALLIC) != 0) ? gMetallicTexture.Sample(gLinearWrapSampler, input.texcoord).r : 1.0);
+    const float aoSample = hasPackedOrm
+        ? packedOrmSample.r
+        : (((gMaterialTextureMask & RB_TEXTURE_OCCLUSION) != 0) ? gOcclusionTexture.Sample(gLinearWrapSampler, input.texcoord).r : 1.0);
     const float3 emissiveSample = ((gMaterialTextureMask & RB_TEXTURE_EMISSIVE) != 0) ? gEmissiveTexture.Sample(gLinearWrapSampler, input.texcoord).rgb : float3(1.0, 1.0, 1.0);
     const float roughness = saturate(max(roughnessSample * gRoughnessFactor, 0.045));
     const float metallic = saturate(metallicSample * gMetallicFactor);

@@ -35,10 +35,10 @@ constexpr UINT TextureSlotMetallic = static_cast<UINT>(rb::TextureSlot::Metallic
 constexpr UINT TextureSlotOcclusion = static_cast<UINT>(rb::TextureSlot::Occlusion);
 constexpr UINT TextureSlotEmissive = static_cast<UINT>(rb::TextureSlot::Emissive);
 constexpr UINT MaterialSrvDescriptorStart = 1;
-constexpr UINT MaxMaterialCount = 63;
+constexpr UINT MaxMaterialCount = 1024;
 constexpr UINT EnvironmentSrvDescriptorIndex = MaterialSrvDescriptorStart + MaxMaterialCount * MaterialTextureSlotCount;
 constexpr UINT ImGuiSrvDescriptorStart = EnvironmentSrvDescriptorIndex + 1;
-constexpr UINT SrvDescriptorCapacity = 512;
+constexpr UINT SrvDescriptorCapacity = ImGuiSrvDescriptorStart + 512;
 constexpr UINT MaterialTextureBaseColorBit = 1u << TextureSlotBaseColor;
 constexpr UINT MaterialTextureNormalBit = 1u << TextureSlotNormal;
 constexpr UINT MaterialTextureRoughnessBit = 1u << TextureSlotRoughness;
@@ -113,6 +113,16 @@ std::wstring LowerExtension(const std::filesystem::path& path)
         return static_cast<wchar_t>(std::towlower(ch));
     });
     return extension;
+}
+
+std::wstring TextureCacheKey(const std::wstring& path)
+{
+    std::filesystem::path normalized = std::filesystem::absolute(std::filesystem::path(path)).lexically_normal();
+    std::wstring key = normalized.generic_wstring();
+    std::transform(key.begin(), key.end(), key.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    return key;
 }
 
 std::string HResultMessage(HRESULT hr)
@@ -872,6 +882,7 @@ bool D3D12Backend::LoadSceneMesh(const ImportedScene& scene, std::string& diagno
         std::ostringstream output;
         output << "D3D12 mesh buffers updated from imported scene.";
         std::array<std::size_t, MaterialTextureSlotCount> loadedTextureCounts = {};
+        std::unordered_map<std::wstring, ComPtr<ID3D12Resource>> textureCache;
         const std::array<const char*, MaterialTextureSlotCount> textureSlotNames =
         {
             "base color",
@@ -917,6 +928,7 @@ bool D3D12Backend::LoadSceneMesh(const ImportedScene& scene, std::string& diagno
                 renderMaterial.constants.occlusionStrength = sceneMaterial.assignment.occlusionStrength;
                 renderMaterial.constants.alphaCutoff = sceneMaterial.assignment.alphaCutoff;
                 renderMaterial.constants.alphaMode = static_cast<float>(sceneMaterial.assignment.alphaMode);
+                renderMaterial.constants.packedOcclusionRoughnessMetallic = sceneMaterial.assignment.packedOcclusionRoughnessMetallic ? 1.0f : 0.0f;
             }
             else
             {
@@ -935,9 +947,21 @@ bool D3D12Backend::LoadSceneMesh(const ImportedScene& scene, std::string& diagno
                     continue;
                 }
 
+                const std::wstring textureKey = TextureCacheKey(texturePath);
+                const auto cachedTexture = textureCache.find(textureKey);
+                if (cachedTexture != textureCache.end())
+                {
+                    m_materialTextures[materialIndex][textureSlot] = cachedTexture->second;
+                    m_device->CreateShaderResourceView(cachedTexture->second.Get(), nullptr, SrvCpuHandle(descriptorBase + textureSlot));
+                    renderMaterial.constants.textureMask |= textureSlotBits[textureSlot];
+                    ++loadedTextureCounts[textureSlot];
+                    continue;
+                }
+
                 std::string textureDiagnostics;
                 if (CreateMaterialTexture(texturePath, descriptorBase + textureSlot, m_materialTextures[materialIndex][textureSlot], textureDiagnostics))
                 {
+                    textureCache[textureKey] = m_materialTextures[materialIndex][textureSlot];
                     renderMaterial.constants.textureMask |= textureSlotBits[textureSlot];
                     ++loadedTextureCounts[textureSlot];
                 }
@@ -959,7 +983,8 @@ bool D3D12Backend::LoadSceneMesh(const ImportedScene& scene, std::string& diagno
                << loadedTextureCounts[TextureSlotRoughness] << " roughness, "
                << loadedTextureCounts[TextureSlotMetallic] << " metallic, "
                << loadedTextureCounts[TextureSlotOcclusion] << " occlusion, "
-               << loadedTextureCounts[TextureSlotEmissive] << " emissive.";
+               << loadedTextureCounts[TextureSlotEmissive] << " emissive."
+               << "\nUnique uploaded material textures: " << textureCache.size() << ".";
         diagnostics = output.str();
         return true;
     }
@@ -1202,6 +1227,28 @@ bool D3D12Backend::TryApplyShaders(const std::string& shaderSetName, const std::
         diagnostics = ex.what();
         return false;
     }
+}
+
+void D3D12Backend::RenameShaderSetPipeline(const std::string& previousName, const std::string& newName)
+{
+    if (previousName == newName)
+    {
+        return;
+    }
+
+    const auto existingPipeline = m_pipelineStates.find(previousName);
+    if (existingPipeline == m_pipelineStates.end())
+    {
+        return;
+    }
+
+    m_pipelineStates[newName] = existingPipeline->second;
+    m_pipelineStates.erase(existingPipeline);
+}
+
+void D3D12Backend::RemoveShaderSetPipeline(const std::string& name)
+{
+    m_pipelineStates.erase(name);
 }
 
 void D3D12Backend::InitializeImGui(HWND hwnd)
@@ -1462,6 +1509,7 @@ void D3D12Backend::SetMaterialAssignments(const std::vector<MaterialAssignment>&
                 material.constants.occlusionStrength = assignment.occlusionStrength;
                 material.constants.alphaCutoff = assignment.alphaCutoff;
                 material.constants.alphaMode = static_cast<float>(assignment.alphaMode);
+                material.constants.packedOcclusionRoughnessMetallic = assignment.packedOcclusionRoughnessMetallic ? 1.0f : 0.0f;
                 break;
             }
         }

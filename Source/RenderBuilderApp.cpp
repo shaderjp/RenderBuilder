@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cctype>
+#include <cwctype>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -49,6 +50,24 @@ constexpr const wchar_t* EnvironmentFileFilter = L"Environment Files\0*.hdr;*.dd
 constexpr const char* LookDevShaderSetName = "LookDev PBR";
 constexpr const char* DefaultRasterShaderSetName = "Default Raster Shader";
 constexpr const char* CustomLookDevPresetName = "Custom";
+
+std::wstring LowerExtension(const std::filesystem::path& path)
+{
+    std::wstring extension = path.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    return extension;
+}
+
+std::wstring LowerFilename(const std::filesystem::path& path)
+{
+    std::wstring filename = path.filename().wstring();
+    std::transform(filename.begin(), filename.end(), filename.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    return filename;
+}
 
 std::wstring Utf8ToWide(const std::string& text)
 {
@@ -122,6 +141,69 @@ std::string TextureFileName(const std::wstring& path)
         return "<none>";
     }
     return WideToUtf8(std::filesystem::path(path).filename().wstring());
+}
+
+std::string TrimAscii(std::string text)
+{
+    const auto first = std::find_if_not(text.begin(), text.end(), [](unsigned char ch) { return std::isspace(ch) != 0; });
+    const auto last = std::find_if_not(text.rbegin(), text.rend(), [](unsigned char ch) { return std::isspace(ch) != 0; }).base();
+    if (first >= last)
+    {
+        return {};
+    }
+    return std::string(first, last);
+}
+
+const char* AssetKindName(rb::AssetKind kind)
+{
+    switch (kind)
+    {
+    case rb::AssetKind::Scene: return "Model";
+    case rb::AssetKind::Texture: return "Texture";
+    case rb::AssetKind::Environment: return "HDRI";
+    case rb::AssetKind::Shader: return "Shader";
+    case rb::AssetKind::Project: return "Project";
+    case rb::AssetKind::Other:
+    default:
+        return "Other";
+    }
+}
+
+std::string AssetPathLabel(const std::filesystem::path& root, const std::filesystem::path& path)
+{
+    if (path.empty())
+    {
+        return {};
+    }
+
+    std::filesystem::path normalizedPath = path.lexically_normal();
+    std::filesystem::path normalizedRoot = root.lexically_normal();
+    if (!normalizedRoot.empty())
+    {
+        const std::filesystem::path relative = normalizedPath.lexically_relative(normalizedRoot);
+        if (!relative.empty())
+        {
+            const std::wstring relativeText = relative.generic_wstring();
+            if (relativeText.rfind(L"..", 0) != 0)
+            {
+                return WideToUtf8(relativeText);
+            }
+        }
+    }
+    return WideToUtf8(normalizedPath.generic_wstring());
+}
+
+bool ShouldSkipAssetDirectory(const std::filesystem::path& path)
+{
+    const std::wstring name = LowerFilename(path);
+    return name == L".git"
+        || name == L".vs"
+        || name == L"bin"
+        || name == L"obj"
+        || name == L"build"
+        || name == L"thirdparty"
+        || name == L"grapicssample"
+        || name == L"graphicssample";
 }
 
 std::wstring SceneTexturePath(const rb::SceneMaterial& material, std::size_t textureSlot)
@@ -1119,6 +1201,285 @@ void RenderBuilderApp::MarkLookDevCustom()
     m_project.activeLookDevPresetName = CustomLookDevPresetName;
 }
 
+void RenderBuilderApp::RefreshAssetCatalog()
+{
+    m_assetCatalog.clear();
+
+    auto scanRoot = [&](const std::filesystem::path& root, const std::string& source)
+    {
+        std::error_code ec;
+        if (root.empty() || !std::filesystem::exists(root, ec) || !std::filesystem::is_directory(root, ec))
+        {
+            return;
+        }
+
+        std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec);
+        const std::filesystem::recursive_directory_iterator end;
+        std::size_t scannedCount = 0;
+        while (!ec && it != end && scannedCount < 4096)
+        {
+            const std::filesystem::directory_entry entry = *it;
+            if (entry.is_directory(ec))
+            {
+                if (ShouldSkipAssetDirectory(entry.path()))
+                {
+                    it.disable_recursion_pending();
+                }
+            }
+            else if (entry.is_regular_file(ec))
+            {
+                const AssetKind kind = ClassifyAssetPath(entry.path());
+                if (kind != AssetKind::Other)
+                {
+                    AddAssetCatalogItem(kind, entry.path(), source, false);
+                }
+            }
+            ++scannedCount;
+            it.increment(ec);
+        }
+    };
+
+    scanRoot(m_rootDirectory / "Assets", "Assets");
+    scanRoot(m_rootDirectory / "Shaders", "Shaders");
+
+    const std::filesystem::path projectDirectory = m_project.path.empty() ? std::filesystem::path() : std::filesystem::path(m_project.path).parent_path();
+    if (!projectDirectory.empty() && projectDirectory.lexically_normal() != m_rootDirectory.lexically_normal())
+    {
+        scanRoot(projectDirectory, "Project Folder");
+    }
+
+    const std::filesystem::path sceneDirectory = m_project.scenePath.empty() ? std::filesystem::path() : std::filesystem::path(m_project.scenePath).parent_path();
+    if (!sceneDirectory.empty()
+        && sceneDirectory.lexically_normal() != m_rootDirectory.lexically_normal()
+        && sceneDirectory.lexically_normal() != projectDirectory.lexically_normal())
+    {
+        scanRoot(sceneDirectory, "Scene Folder");
+    }
+
+    AddReferencedAsset(AssetKind::Scene, m_project.scenePath, "Project Scene");
+    AddReferencedAsset(AssetKind::Environment, m_project.lookDevEnvironment.environmentPath, "Active HDRI");
+    for (const ShaderSet& shaderSet : m_project.shaderSets)
+    {
+        AddReferencedAsset(AssetKind::Shader, shaderSet.sourcePath, "Shader Set: " + shaderSet.name);
+    }
+    for (const MaterialAssignment& assignment : m_project.materialAssignments)
+    {
+        for (std::size_t textureSlot = 0; textureSlot < MaterialTextureSlotCount; ++textureSlot)
+        {
+            if (assignment.textureOverrideEnabled[textureSlot])
+            {
+                AddReferencedAsset(
+                    AssetKind::Texture,
+                    assignment.textureOverrides[textureSlot],
+                    "Override: " + assignment.materialName + " / " + TextureSlotLabels[textureSlot]);
+            }
+        }
+    }
+    for (const SceneMaterial& material : m_sceneMaterials)
+    {
+        for (std::size_t textureSlot = 0; textureSlot < MaterialTextureSlotCount; ++textureSlot)
+        {
+            AddReferencedAsset(
+                AssetKind::Texture,
+                SceneTexturePath(material, textureSlot),
+                "Imported: " + material.assignment.materialName + " / " + TextureSlotLabels[textureSlot]);
+        }
+    }
+
+    std::sort(m_assetCatalog.begin(), m_assetCatalog.end(), [](const AssetBrowserItem& a, const AssetBrowserItem& b) {
+        if (a.missing != b.missing)
+        {
+            return a.missing && !b.missing;
+        }
+        if (a.kind != b.kind)
+        {
+            return static_cast<int>(a.kind) < static_cast<int>(b.kind);
+        }
+        return LowerFilename(a.path) < LowerFilename(b.path);
+    });
+    m_assetCatalogDirty = false;
+}
+
+void RenderBuilderApp::AddAssetCatalogItem(AssetKind kind, const std::filesystem::path& path, const std::string& source, bool referenced)
+{
+    if (path.empty())
+    {
+        return;
+    }
+
+    std::error_code ec;
+    const std::filesystem::path absolutePath = AbsoluteLexicalPath(path);
+    const bool missing = !std::filesystem::exists(absolutePath, ec);
+    const auto existing = std::find_if(
+        m_assetCatalog.begin(),
+        m_assetCatalog.end(),
+        [&](const AssetBrowserItem& item)
+        {
+            return item.kind == kind && item.path.lexically_normal() == absolutePath.lexically_normal();
+        });
+    if (existing != m_assetCatalog.end())
+    {
+        existing->referenced = existing->referenced || referenced;
+        existing->missing = existing->missing && missing;
+        if (referenced && existing->source.find(source) == std::string::npos)
+        {
+            if (!existing->source.empty())
+            {
+                existing->source += ", ";
+            }
+            existing->source += source;
+        }
+        return;
+    }
+
+    AssetBrowserItem item;
+    item.kind = kind;
+    item.path = absolutePath;
+    item.source = source;
+    item.referenced = referenced;
+    item.missing = missing;
+    m_assetCatalog.push_back(item);
+}
+
+void RenderBuilderApp::AddReferencedAsset(AssetKind kind, const std::filesystem::path& path, const std::string& source)
+{
+    if (path.empty())
+    {
+        return;
+    }
+    AddAssetCatalogItem(kind, path, source, true);
+}
+
+AssetKind RenderBuilderApp::ClassifyAssetPath(const std::filesystem::path& path) const
+{
+    const std::wstring extension = LowerExtension(path);
+    const std::wstring filename = LowerFilename(path);
+    if (extension == L".gltf" || extension == L".glb" || extension == L".fbx" || extension == L".obj")
+    {
+        return AssetKind::Scene;
+    }
+    if (extension == L".hlsl" || extension == L".hlsli")
+    {
+        return AssetKind::Shader;
+    }
+    if (filename.ends_with(L".renderbuilder.json"))
+    {
+        return AssetKind::Project;
+    }
+    if (extension == L".hdr" || extension == L".exr")
+    {
+        return AssetKind::Environment;
+    }
+    if (extension == L".dds"
+        || extension == L".tga"
+        || extension == L".png"
+        || extension == L".jpg"
+        || extension == L".jpeg"
+        || extension == L".bmp"
+        || extension == L".tif"
+        || extension == L".tiff")
+    {
+        return AssetKind::Texture;
+    }
+    return AssetKind::Other;
+}
+
+bool RenderBuilderApp::AssetMatchesFilter(const AssetBrowserItem& item) const
+{
+    switch (m_assetKindFilter)
+    {
+    case 1: if (item.kind != AssetKind::Scene) { return false; } break;
+    case 2: if (item.kind != AssetKind::Texture) { return false; } break;
+    case 3: if (item.kind != AssetKind::Environment) { return false; } break;
+    case 4: if (item.kind != AssetKind::Shader) { return false; } break;
+    case 5: if (item.kind != AssetKind::Project) { return false; } break;
+    case 6: if (!item.missing) { return false; } break;
+    default: break;
+    }
+
+    if (m_assetSearchBuffer[0] == '\0')
+    {
+        return true;
+    }
+
+    std::string haystack = AssetPathLabel(m_rootDirectory, item.path) + " " + item.source + " " + AssetKindName(item.kind);
+    std::string needle = m_assetSearchBuffer;
+    std::transform(haystack.begin(), haystack.end(), haystack.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return haystack.find(needle) != std::string::npos;
+}
+
+void RenderBuilderApp::LoadSelectedAsset()
+{
+    if (m_selectedAssetPath.empty())
+    {
+        return;
+    }
+
+    const AssetKind kind = ClassifyAssetPath(m_selectedAssetPath);
+    if (kind == AssetKind::Scene)
+    {
+        if (LoadScenePath(m_selectedAssetPath.wstring()))
+        {
+            m_assetCatalogDirty = true;
+        }
+        return;
+    }
+    if (kind == AssetKind::Shader)
+    {
+        LoadShaderFromDisk(m_selectedAssetPath);
+        CompileActiveShader();
+        m_sceneDiagnostics = "Loaded shader asset " + AssetPathLabel(m_rootDirectory, m_selectedAssetPath);
+        MarkProjectDirty();
+        m_assetCatalogDirty = true;
+        return;
+    }
+    if (kind == AssetKind::Project)
+    {
+        LoadProjectFromDisk(m_selectedAssetPath);
+    }
+}
+
+void RenderBuilderApp::UseSelectedAssetAsEnvironment()
+{
+    if (m_selectedAssetPath.empty())
+    {
+        return;
+    }
+
+    std::string diagnostics;
+    if (m_backend.UpdateEnvironmentTexture(m_selectedAssetPath.wstring(), diagnostics))
+    {
+        MarkLookDevCustom();
+        m_project.lookDevEnvironment.environmentPath = m_selectedAssetPath.wstring();
+        m_project.lookDevEnvironment.backgroundMode = LookDevBackgroundMode::Hdri;
+        ApplyLookDevSettings();
+        m_sceneDiagnostics = diagnostics;
+        MarkProjectDirty();
+        m_assetCatalogDirty = true;
+    }
+    else
+    {
+        m_sceneDiagnostics = "Environment load failed: " + diagnostics;
+    }
+}
+
+void RenderBuilderApp::AssignSelectedTextureToMaterialSlot()
+{
+    if (m_selectedAssetPath.empty() || m_project.materialAssignments.empty())
+    {
+        return;
+    }
+
+    m_assetMaterialIndex = std::min(m_assetMaterialIndex, m_project.materialAssignments.size() - 1);
+    m_assetTextureSlot = std::min(m_assetTextureSlot, MaterialTextureSlotCount - 1);
+    MaterialAssignment& assignment = m_project.materialAssignments[m_assetMaterialIndex];
+    assignment.textureOverrideEnabled[m_assetTextureSlot] = true;
+    assignment.textureOverrides[m_assetTextureSlot] = m_selectedAssetPath.wstring();
+    ApplyMaterialTextureSlot(assignment, m_assetTextureSlot);
+    m_assetCatalogDirty = true;
+}
+
 void RenderBuilderApp::LoadShaderFromDisk(const std::filesystem::path& path)
 {
     m_activeShaderSet.sourcePath = path.wstring();
@@ -1127,6 +1488,7 @@ void RenderBuilderApp::LoadShaderFromDisk(const std::filesystem::path& path)
     const std::size_t copySize = std::min(m_activeShaderSet.sourceText.size(), m_shaderTextBuffer.size() - 1);
     std::memcpy(m_shaderTextBuffer.data(), m_activeShaderSet.sourceText.data(), copySize);
     m_shaderDirty = false;
+    m_assetCatalogDirty = true;
 }
 
 void RenderBuilderApp::SynchronizeActiveShaderSet()
@@ -1165,14 +1527,157 @@ void RenderBuilderApp::CreateShaderSetFromActive()
     SynchronizeActiveShaderSet();
 
     ShaderSet shaderSet = m_activeShaderSet;
-    char name[64] = {};
-    std::snprintf(name, sizeof(name), "Shader Set %u", m_shaderSetSerial++);
-    shaderSet.name = name;
+    shaderSet.name = UniqueShaderSetName("Shader Set " + std::to_string(m_shaderSetSerial++));
     shaderSet.sourcePath.clear();
     m_project.shaderSets.push_back(shaderSet);
     SelectShaderSet(m_project.shaderSets.size() - 1);
     m_shaderDirty = true;
+    m_assetCatalogDirty = true;
     MarkProjectDirty();
+}
+
+void RenderBuilderApp::DuplicateActiveShaderSet()
+{
+    SynchronizeActiveShaderSet();
+
+    ShaderSet shaderSet = m_activeShaderSet;
+    shaderSet.name = UniqueShaderSetName(m_activeShaderSet.name + " Copy");
+    shaderSet.sourcePath.clear();
+    m_project.shaderSets.push_back(shaderSet);
+    SelectShaderSet(m_project.shaderSets.size() - 1);
+    m_shaderDirty = true;
+    m_assetCatalogDirty = true;
+    m_sceneDiagnostics = "Duplicated shader set as '" + shaderSet.name + "'.";
+    MarkProjectDirty();
+}
+
+void RenderBuilderApp::DeleteActiveShaderSet()
+{
+    if (m_project.shaderSets.size() <= 1 || m_activeShaderSetIndex >= m_project.shaderSets.size())
+    {
+        m_sceneDiagnostics = "Cannot delete the last shader set.";
+        return;
+    }
+
+    SynchronizeActiveShaderSet();
+    const std::string deletedName = m_project.shaderSets[m_activeShaderSetIndex].name;
+    const std::size_t fallbackIndex = m_activeShaderSetIndex == 0 ? 1 : 0;
+    const std::string fallbackName = m_project.shaderSets[fallbackIndex].name;
+
+    for (MaterialAssignment& assignment : m_project.materialAssignments)
+    {
+        if (assignment.shaderSetName == deletedName)
+        {
+            assignment.shaderSetName = fallbackName;
+        }
+    }
+
+    m_project.shaderSets.erase(m_project.shaderSets.begin() + static_cast<std::ptrdiff_t>(m_activeShaderSetIndex));
+    m_shaderSetStatus.erase(deletedName);
+    m_backend.RemoveShaderSetPipeline(deletedName);
+    if (m_activeShaderSetIndex >= m_project.shaderSets.size())
+    {
+        m_activeShaderSetIndex = m_project.shaderSets.size() - 1;
+    }
+    m_activeShaderSet = m_project.shaderSets[m_activeShaderSetIndex];
+    std::fill(m_shaderTextBuffer.begin(), m_shaderTextBuffer.end(), '\0');
+    const std::size_t copySize = std::min(m_activeShaderSet.sourceText.size(), m_shaderTextBuffer.size() - 1);
+    std::memcpy(m_shaderTextBuffer.data(), m_activeShaderSet.sourceText.data(), copySize);
+    m_shaderDirty = false;
+    m_backend.SetMaterialAssignments(m_project.materialAssignments);
+    m_assetCatalogDirty = true;
+    m_sceneDiagnostics = "Deleted shader set '" + deletedName + "'. Materials using it now use '" + fallbackName + "'.";
+    MarkProjectDirty();
+}
+
+void RenderBuilderApp::RenameActiveShaderSet(const std::string& newName)
+{
+    const std::string trimmedName = TrimAscii(newName);
+    if (trimmedName.empty() || m_activeShaderSetIndex >= m_project.shaderSets.size())
+    {
+        return;
+    }
+    if (trimmedName == m_activeShaderSet.name)
+    {
+        return;
+    }
+    if (ShaderSetNameExists(trimmedName, m_activeShaderSetIndex))
+    {
+        m_sceneDiagnostics = "Shader set name already exists: " + trimmedName;
+        return;
+    }
+
+    const std::string previousName = m_activeShaderSet.name;
+    m_activeShaderSet.name = trimmedName;
+    m_project.shaderSets[m_activeShaderSetIndex].name = trimmedName;
+    for (MaterialAssignment& assignment : m_project.materialAssignments)
+    {
+        if (assignment.shaderSetName == previousName)
+        {
+            assignment.shaderSetName = trimmedName;
+        }
+    }
+
+    const auto status = m_shaderSetStatus.find(previousName);
+    if (status != m_shaderSetStatus.end())
+    {
+        m_shaderSetStatus[trimmedName] = status->second;
+        m_shaderSetStatus.erase(status);
+    }
+    m_backend.RenameShaderSetPipeline(previousName, trimmedName);
+    m_backend.SetMaterialAssignments(m_project.materialAssignments);
+    m_shaderDirty = true;
+    m_assetCatalogDirty = true;
+    MarkProjectDirty();
+}
+
+bool RenderBuilderApp::ShaderSetNameExists(const std::string& name, std::size_t excludeIndex) const
+{
+    for (std::size_t i = 0; i < m_project.shaderSets.size(); ++i)
+    {
+        if (i != excludeIndex && m_project.shaderSets[i].name == name)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string RenderBuilderApp::UniqueShaderSetName(const std::string& baseName) const
+{
+    std::string candidate = TrimAscii(baseName);
+    if (candidate.empty())
+    {
+        candidate = "Shader Set";
+    }
+    if (!ShaderSetNameExists(candidate))
+    {
+        return candidate;
+    }
+
+    for (std::uint32_t suffix = 2; suffix < 10000; ++suffix)
+    {
+        const std::string suffixedName = candidate + " " + std::to_string(suffix);
+        if (!ShaderSetNameExists(suffixedName))
+        {
+            return suffixedName;
+        }
+    }
+    return candidate + " " + std::to_string(m_project.shaderSets.size() + 1);
+}
+
+std::size_t RenderBuilderApp::ShaderSetUsageCount(const std::string& name) const
+{
+    return static_cast<std::size_t>(std::count_if(
+        m_project.materialAssignments.begin(),
+        m_project.materialAssignments.end(),
+        [&](const MaterialAssignment& assignment) { return assignment.shaderSetName == name; }));
+}
+
+const ShaderSetRuntimeStatus* RenderBuilderApp::ShaderStatusFor(const std::string& name) const
+{
+    const auto status = m_shaderSetStatus.find(name);
+    return status == m_shaderSetStatus.end() ? nullptr : &status->second;
 }
 
 void RenderBuilderApp::Tick()
@@ -1207,6 +1712,10 @@ void RenderBuilderApp::Tick()
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S))
     {
         SaveProject();
+    }
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Enter))
+    {
+        CompileActiveShader();
     }
     if (m_project.lookDevViewSettings.turntableEnabled)
     {
@@ -1370,6 +1879,10 @@ void RenderBuilderApp::DrawDockspace()
             {
                 CompileActiveShader();
             }
+            if (ImGui::MenuItem("Compile All Shader Sets"))
+            {
+                CompileAllShaderSets();
+            }
             ImGui::EndMenu();
         }
         ImGui::EndMenuBar();
@@ -1495,27 +2008,29 @@ void RenderBuilderApp::DrawShaderEditorPanel()
     {
         CreateShaderSetFromActive();
     }
+    ImGui::SameLine();
+    if (ImGui::Button("Duplicate"))
+    {
+        DuplicateActiveShaderSet();
+    }
+    ImGui::SameLine();
+    if (m_project.shaderSets.size() > 1)
+    {
+        if (ImGui::Button("Delete"))
+        {
+            DeleteActiveShaderSet();
+        }
+    }
+    else
+    {
+        ImGui::TextDisabled("Delete");
+    }
 
     char shaderName[128] = {};
-    const std::string previousName = m_activeShaderSet.name;
     strncpy_s(shaderName, m_activeShaderSet.name.c_str(), _TRUNCATE);
     if (ImGui::InputText("Name", shaderName, sizeof(shaderName)))
     {
-        if (shaderName[0] != '\0')
-        {
-            m_activeShaderSet.name = shaderName;
-            for (MaterialAssignment& assignment : m_project.materialAssignments)
-            {
-                if (assignment.shaderSetName == previousName)
-                {
-                    assignment.shaderSetName = m_activeShaderSet.name;
-                }
-            }
-            m_backend.SetMaterialAssignments(m_project.materialAssignments);
-            m_shaderDirty = true;
-            SynchronizeActiveShaderSet();
-            MarkProjectDirty();
-        }
+        RenameActiveShaderSet(shaderName);
     }
 
     ImGui::Text("Source: %s", m_activeShaderSet.sourcePath.empty() ? "<memory>" : WideToUtf8(m_activeShaderSet.sourcePath).c_str());
@@ -1528,14 +2043,38 @@ void RenderBuilderApp::DrawShaderEditorPanel()
     {
         ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f), "compiled");
     }
+    ImGui::SameLine();
+    const ShaderSetRuntimeStatus* activeStatus = ShaderStatusFor(m_activeShaderSet.name);
+    if (!activeStatus || !activeStatus->compileAttempted)
+    {
+        ImGui::TextDisabled("PSO: not compiled");
+    }
+    else if (activeStatus->lastCompileSucceeded)
+    {
+        ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f), "PSO: last-good active");
+    }
+    else if (activeStatus->hasLastGoodPso)
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f), "PSO: keeping last-good");
+    }
+    else
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "PSO: unavailable");
+    }
 
     ImGui::PushItemWidth(140.0f);
     char vsEntry[64] = {};
     char psEntry[64] = {};
+    char vsProfile[64] = {};
+    char psProfile[64] = {};
     const std::string vsEntryText = WideToUtf8(m_activeShaderSet.vertexEntry);
     const std::string psEntryText = WideToUtf8(m_activeShaderSet.pixelEntry);
+    const std::string vsProfileText = WideToUtf8(m_activeShaderSet.vertexProfile);
+    const std::string psProfileText = WideToUtf8(m_activeShaderSet.pixelProfile);
     strncpy_s(vsEntry, vsEntryText.c_str(), _TRUNCATE);
     strncpy_s(psEntry, psEntryText.c_str(), _TRUNCATE);
+    strncpy_s(vsProfile, vsProfileText.c_str(), _TRUNCATE);
+    strncpy_s(psProfile, psProfileText.c_str(), _TRUNCATE);
     if (ImGui::InputText("VS Entry", vsEntry, sizeof(vsEntry)))
     {
         m_activeShaderSet.vertexEntry = Utf8ToWide(vsEntry);
@@ -1549,11 +2088,29 @@ void RenderBuilderApp::DrawShaderEditorPanel()
         m_shaderDirty = true;
         MarkProjectDirty();
     }
+    if (ImGui::InputText("VS Profile", vsProfile, sizeof(vsProfile)))
+    {
+        m_activeShaderSet.vertexProfile = Utf8ToWide(vsProfile);
+        m_shaderDirty = true;
+        MarkProjectDirty();
+    }
+    ImGui::SameLine();
+    if (ImGui::InputText("PS Profile", psProfile, sizeof(psProfile)))
+    {
+        m_activeShaderSet.pixelProfile = Utf8ToWide(psProfile);
+        m_shaderDirty = true;
+        MarkProjectDirty();
+    }
     ImGui::PopItemWidth();
 
     if (ImGui::Button("Compile"))
     {
         CompileActiveShader();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Compile All"))
+    {
+        CompileAllShaderSets();
     }
     ImGui::SameLine();
     if (ImGui::Button("Reload Default"))
@@ -1584,6 +2141,9 @@ void RenderBuilderApp::DrawShaderEditorPanel()
         MarkProjectDirty();
     }
 
+    DrawShaderSetManagement();
+    DrawMaterialShaderAssignmentOverview();
+
     ImGuiInputTextFlags flags = ImGuiInputTextFlags_AllowTabInput;
     if (ImGui::InputTextMultiline("##ShaderSource", m_shaderTextBuffer.data(), m_shaderTextBuffer.size(), ImVec2(-FLT_MIN, -FLT_MIN), flags))
     {
@@ -1591,6 +2151,150 @@ void RenderBuilderApp::DrawShaderEditorPanel()
         MarkProjectDirty();
     }
     ImGui::End();
+}
+
+void RenderBuilderApp::DrawShaderSetManagement()
+{
+    if (!ImGui::CollapsingHeader("Shader Set Manager", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        return;
+    }
+
+    if (ImGui::BeginTable("ShaderSetManagerTable", 5, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
+    {
+        ImGui::TableSetupColumn("Shader Set");
+        ImGui::TableSetupColumn("Compile");
+        ImGui::TableSetupColumn("Last-good PSO");
+        ImGui::TableSetupColumn("Materials");
+        ImGui::TableSetupColumn("Profiles");
+        ImGui::TableHeadersRow();
+
+        for (std::size_t i = 0; i < m_project.shaderSets.size(); ++i)
+        {
+            const ShaderSet& shaderSet = m_project.shaderSets[i];
+            const ShaderSetRuntimeStatus* status = ShaderStatusFor(shaderSet.name);
+            ImGui::TableNextRow();
+            ImGui::PushID(static_cast<int>(i));
+
+            ImGui::TableNextColumn();
+            const bool selected = i == m_activeShaderSetIndex;
+            if (ImGui::Selectable(shaderSet.name.c_str(), selected))
+            {
+                SelectShaderSet(i);
+            }
+            if (!shaderSet.sourcePath.empty() && ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("%s", WideToUtf8(shaderSet.sourcePath).c_str());
+            }
+
+            ImGui::TableNextColumn();
+            if (!status || !status->compileAttempted)
+            {
+                ImGui::TextDisabled("Not compiled");
+            }
+            else if (status->lastCompileSucceeded)
+            {
+                ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f), "Succeeded");
+            }
+            else
+            {
+                ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "Failed");
+            }
+
+            ImGui::TableNextColumn();
+            if (status && status->hasLastGoodPso)
+            {
+                ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f), "Available");
+            }
+            else
+            {
+                ImGui::TextDisabled("None");
+            }
+
+            ImGui::TableNextColumn();
+            ImGui::Text("%zu", ShaderSetUsageCount(shaderSet.name));
+
+            ImGui::TableNextColumn();
+            ImGui::Text("%s / %s", WideToUtf8(shaderSet.vertexProfile).c_str(), WideToUtf8(shaderSet.pixelProfile).c_str());
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+}
+
+void RenderBuilderApp::DrawMaterialShaderAssignmentOverview()
+{
+    if (!ImGui::CollapsingHeader("Material Shader Assignments"))
+    {
+        return;
+    }
+
+    if (m_project.materialAssignments.empty())
+    {
+        ImGui::TextDisabled("No materials are available.");
+        return;
+    }
+
+    bool assignmentsChanged = false;
+    if (ImGui::BeginTable("MaterialShaderAssignmentTable", 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
+    {
+        ImGui::TableSetupColumn("Material");
+        ImGui::TableSetupColumn("Shader Set");
+        ImGui::TableSetupColumn("PSO");
+        ImGui::TableHeadersRow();
+
+        for (std::size_t materialIndex = 0; materialIndex < m_project.materialAssignments.size(); ++materialIndex)
+        {
+            MaterialAssignment& assignment = m_project.materialAssignments[materialIndex];
+            ImGui::TableNextRow();
+            ImGui::PushID(static_cast<int>(materialIndex));
+
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(assignment.materialName.c_str());
+
+            ImGui::TableNextColumn();
+            if (ImGui::BeginCombo("##MaterialShaderSet", assignment.shaderSetName.c_str()))
+            {
+                for (const ShaderSet& shaderSet : m_project.shaderSets)
+                {
+                    const bool selected = assignment.shaderSetName == shaderSet.name;
+                    if (ImGui::Selectable(shaderSet.name.c_str(), selected))
+                    {
+                        assignment.shaderSetName = shaderSet.name;
+                        assignmentsChanged = true;
+                    }
+                    if (selected)
+                    {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+
+            ImGui::TableNextColumn();
+            const ShaderSetRuntimeStatus* status = ShaderStatusFor(assignment.shaderSetName);
+            if (status && status->lastCompileSucceeded)
+            {
+                ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f), "Active");
+            }
+            else if (status && status->hasLastGoodPso)
+            {
+                ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f), "Last-good");
+            }
+            else
+            {
+                ImGui::TextDisabled("Fallback");
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+
+    if (assignmentsChanged)
+    {
+        m_backend.SetMaterialAssignments(m_project.materialAssignments);
+        MarkProjectDirty();
+    }
 }
 
 void RenderBuilderApp::DrawMaterialInspectorPanel()
@@ -1722,6 +2426,10 @@ void RenderBuilderApp::DrawMaterialInspectorPanel()
         {
             assignmentChanged = true;
         }
+        if (ImGui::Checkbox("Packed ORM (R=AO G=Roughness B=Metallic)", &assignment.packedOcclusionRoughnessMetallic))
+        {
+            assignmentChanged = true;
+        }
         if (assignmentChanged)
         {
             m_backend.SetMaterialAssignments(m_project.materialAssignments);
@@ -1836,6 +2544,7 @@ void RenderBuilderApp::DrawAssetBrowserPanel()
                 ApplyLookDevSettings();
                 m_sceneDiagnostics = diagnostics;
                 MarkProjectDirty();
+                m_assetCatalogDirty = true;
             }
             else
             {
@@ -1853,6 +2562,7 @@ void RenderBuilderApp::DrawAssetBrowserPanel()
         ApplyLookDevSettings();
         m_sceneDiagnostics = diagnostics;
         MarkProjectDirty();
+        m_assetCatalogDirty = true;
     }
 
     const char* backgroundModes[] = { "SkyColor", "HDRI Background", "Transparent Checker" };
@@ -1935,8 +2645,190 @@ void RenderBuilderApp::DrawAssetBrowserPanel()
         SaveViewportSnapshot();
     }
     ImGui::Separator();
+    DrawAssetCatalogPanel();
+    ImGui::Separator();
     ImGui::TextWrapped("%s", m_sceneDiagnostics.c_str());
     ImGui::End();
+}
+
+void RenderBuilderApp::DrawAssetCatalogPanel()
+{
+    ImGui::SeparatorText("Assets");
+    if (m_assetCatalogDirty)
+    {
+        RefreshAssetCatalog();
+    }
+
+    std::size_t missingCount = 0;
+    for (const AssetBrowserItem& item : m_assetCatalog)
+    {
+        if (item.missing)
+        {
+            ++missingCount;
+        }
+    }
+
+    if (ImGui::Button("Refresh Assets"))
+    {
+        RefreshAssetCatalog();
+    }
+    ImGui::SameLine();
+    ImGui::Text("%zu assets", m_assetCatalog.size());
+    if (missingCount > 0)
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.42f, 0.32f, 1.0f), "%zu missing", missingCount);
+    }
+
+    const char* filters[] = { "All", "Models", "Textures", "HDRI", "Shaders", "Projects", "Missing" };
+    ImGui::PushItemWidth(130.0f);
+    ImGui::Combo("Filter", &m_assetKindFilter, filters, _countof(filters));
+    ImGui::PopItemWidth();
+    ImGui::SameLine();
+    ImGui::PushItemWidth(-FLT_MIN);
+    ImGui::InputText("##AssetSearch", m_assetSearchBuffer, sizeof(m_assetSearchBuffer));
+    ImGui::PopItemWidth();
+
+    ImGui::BeginChild("AssetCatalogList", ImVec2(0.0f, 190.0f), true);
+    for (const AssetBrowserItem& item : m_assetCatalog)
+    {
+        if (!AssetMatchesFilter(item))
+        {
+            continue;
+        }
+
+        const bool selected = m_selectedAssetPath.lexically_normal() == item.path.lexically_normal();
+        const std::string label = std::string("[") + AssetKindName(item.kind) + "] "
+            + item.path.filename().string()
+            + (item.missing ? " (missing)" : "");
+        if (item.missing)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.42f, 0.32f, 1.0f));
+        }
+        if (ImGui::Selectable(label.c_str(), selected))
+        {
+            m_selectedAssetPath = item.path;
+        }
+        if (item.missing)
+        {
+            ImGui::PopStyleColor();
+        }
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("%s\n%s", AssetPathLabel(m_rootDirectory, item.path).c_str(), item.source.c_str());
+        }
+    }
+    ImGui::EndChild();
+
+    const auto selectedIt = std::find_if(
+        m_assetCatalog.begin(),
+        m_assetCatalog.end(),
+        [&](const AssetBrowserItem& item) { return item.path.lexically_normal() == m_selectedAssetPath.lexically_normal(); });
+    if (selectedIt == m_assetCatalog.end())
+    {
+        ImGui::TextDisabled("Select an asset to apply it.");
+        return;
+    }
+
+    const AssetBrowserItem& selected = *selectedIt;
+    ImGui::Text("Selected: %s", selected.path.filename().string().c_str());
+    ImGui::Text("Type: %s", AssetKindName(selected.kind));
+    ImGui::TextWrapped("Path: %s", AssetPathLabel(m_rootDirectory, selected.path).c_str());
+    if (!selected.source.empty())
+    {
+        ImGui::TextWrapped("Source: %s", selected.source.c_str());
+    }
+    if (selected.missing)
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.42f, 0.32f, 1.0f), "Missing asset. Fix the path or restore the file.");
+        return;
+    }
+
+    if (selected.kind == AssetKind::Scene)
+    {
+        if (ImGui::Button("Load Model"))
+        {
+            LoadSelectedAsset();
+        }
+    }
+    else if (selected.kind == AssetKind::Shader)
+    {
+        if (ImGui::Button("Load Into Active Shader"))
+        {
+            LoadSelectedAsset();
+        }
+    }
+    else if (selected.kind == AssetKind::Project)
+    {
+        if (ImGui::Button("Open Project"))
+        {
+            LoadSelectedAsset();
+        }
+    }
+
+    const std::wstring selectedExtension = LowerExtension(selected.path);
+    const bool canUseAsEnvironment = selected.kind == AssetKind::Environment || selectedExtension == L".dds";
+    if (canUseAsEnvironment)
+    {
+        if (selected.kind == AssetKind::Scene || selected.kind == AssetKind::Shader || selected.kind == AssetKind::Project)
+        {
+            ImGui::SameLine();
+        }
+        if (ImGui::Button("Use as HDRI"))
+        {
+            UseSelectedAssetAsEnvironment();
+        }
+    }
+
+    if (selected.kind == AssetKind::Texture)
+    {
+        if (m_project.materialAssignments.empty())
+        {
+            ImGui::TextDisabled("No materials are available for texture assignment.");
+            return;
+        }
+
+        m_assetMaterialIndex = std::min(m_assetMaterialIndex, m_project.materialAssignments.size() - 1);
+        if (ImGui::BeginCombo("Target Material", m_project.materialAssignments[m_assetMaterialIndex].materialName.c_str()))
+        {
+            for (std::size_t materialIndex = 0; materialIndex < m_project.materialAssignments.size(); ++materialIndex)
+            {
+                const bool materialSelected = materialIndex == m_assetMaterialIndex;
+                if (ImGui::Selectable(m_project.materialAssignments[materialIndex].materialName.c_str(), materialSelected))
+                {
+                    m_assetMaterialIndex = materialIndex;
+                }
+                if (materialSelected)
+                {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        m_assetTextureSlot = std::min(m_assetTextureSlot, MaterialTextureSlotCount - 1);
+        if (ImGui::BeginCombo("Target Slot", TextureSlotLabels[m_assetTextureSlot]))
+        {
+            for (std::size_t textureSlot = 0; textureSlot < MaterialTextureSlotCount; ++textureSlot)
+            {
+                const bool slotSelected = textureSlot == m_assetTextureSlot;
+                if (ImGui::Selectable(TextureSlotLabels[textureSlot], slotSelected))
+                {
+                    m_assetTextureSlot = textureSlot;
+                }
+                if (slotSelected)
+                {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        if (ImGui::Button("Assign Texture Slot"))
+        {
+            AssignSelectedTextureToMaterialSlot();
+        }
+    }
 }
 
 void RenderBuilderApp::DrawDiagnosticsPanel()
@@ -1993,6 +2885,41 @@ void RenderBuilderApp::CompileActiveShader()
     m_compileDiagnostics = diagnostics;
 }
 
+void RenderBuilderApp::CompileAllShaderSets()
+{
+    SynchronizeActiveShaderSet();
+
+    std::ostringstream diagnostics;
+    bool activeCompileSucceeded = false;
+    for (std::size_t i = 0; i < m_project.shaderSets.size(); ++i)
+    {
+        std::string shaderDiagnostics;
+        const bool isActive = i == m_activeShaderSetIndex;
+        const bool succeeded = CompileShaderSet(
+            m_project.shaderSets[i],
+            isActive ? &m_activeVertexShader : nullptr,
+            isActive ? &m_activePixelShader : nullptr,
+            shaderDiagnostics);
+        diagnostics << shaderDiagnostics;
+        if (i + 1 < m_project.shaderSets.size())
+        {
+            diagnostics << "\n\n";
+        }
+        if (isActive)
+        {
+            activeCompileSucceeded = succeeded;
+        }
+    }
+
+    m_activeShaderSet = m_project.shaderSets[m_activeShaderSetIndex];
+    m_lastCompileSucceeded = activeCompileSucceeded;
+    if (activeCompileSucceeded)
+    {
+        m_shaderDirty = false;
+    }
+    m_compileDiagnostics = diagnostics.str();
+}
+
 bool RenderBuilderApp::CompileShaderSet(ShaderSet& shaderSet, std::vector<std::uint8_t>* vertexShader, std::vector<std::uint8_t>* pixelShader, std::string& diagnostics)
 {
     const std::wstring includeDirectory = (m_rootDirectory / "Shaders").wstring();
@@ -2030,12 +2957,21 @@ bool RenderBuilderApp::CompileShaderSet(ShaderSet& shaderSet, std::vector<std::u
             }
             output << "\n[D3D12]\n" << psoDiagnostics;
             diagnostics = output.str();
+            ShaderSetRuntimeStatus& status = m_shaderSetStatus[shaderSet.name];
+            status.compileAttempted = true;
+            status.lastCompileSucceeded = true;
+            status.hasLastGoodPso = true;
+            status.lastDiagnostics = diagnostics;
             return true;
         }
         output << "\n[D3D12]\n" << psoDiagnostics;
     }
 
     diagnostics = output.str();
+    ShaderSetRuntimeStatus& status = m_shaderSetStatus[shaderSet.name];
+    status.compileAttempted = true;
+    status.lastCompileSucceeded = false;
+    status.lastDiagnostics = diagnostics;
     return false;
 }
 
@@ -2071,6 +3007,7 @@ bool RenderBuilderApp::LoadScenePath(const std::wstring& path, bool markDirty)
     m_sceneIndexCount = result.scene.indices.size();
     m_sceneDrawCount = result.scene.draws.size();
     m_sceneDiagnostics = result.diagnostics + "\n" + backendDiagnostics;
+    m_assetCatalogDirty = true;
     if (markDirty)
     {
         MarkProjectDirty();
@@ -2085,6 +3022,7 @@ void RenderBuilderApp::UseDefaultScenePreview()
     m_sceneVertexCount = 24;
     m_sceneIndexCount = 36;
     m_sceneDrawCount = 1;
+    m_assetCatalogDirty = true;
 }
 
 const SceneMaterial* RenderBuilderApp::FindSceneMaterial(const std::string& materialName) const
@@ -2131,6 +3069,7 @@ void RenderBuilderApp::ApplyMaterialTextureSlot(const MaterialAssignment& assign
         m_sceneDiagnostics = std::string(TextureSlotLabels[textureSlot]) + " texture update failed for " + assignment.materialName + ".\n" + diagnostics;
     }
     MarkProjectDirty();
+    m_assetCatalogDirty = true;
 }
 
 std::string RenderBuilderApp::ApplyMaterialTextureOverrides(const std::vector<MaterialAssignment>& assignments)
@@ -2358,6 +3297,7 @@ bool RenderBuilderApp::SaveProjectToDisk(const std::filesystem::path& requestedP
                  << "\"occlusionStrength\": " << material.occlusionStrength << ", "
                  << "\"alphaMode\": \"" << EscapeJson(AlphaModeJsonName(material.alphaMode)) << "\", "
                  << "\"alphaCutoff\": " << material.alphaCutoff << ", "
+                 << "\"packedOcclusionRoughnessMetallic\": " << (material.packedOcclusionRoughnessMetallic ? "true" : "false") << ", "
                  << "\"flipNormalGreen\": " << (material.flipNormalGreen ? "true" : "false") << ", "
                  << "\"textures\": { ";
             for (std::size_t textureSlot = 0; textureSlot < MaterialTextureSlotCount; ++textureSlot)
@@ -2377,6 +3317,7 @@ bool RenderBuilderApp::SaveProjectToDisk(const std::filesystem::path& requestedP
         m_project.path = path.wstring();
         AddRecentProject(path);
         SetProjectDirty(false);
+        m_assetCatalogDirty = true;
         m_sceneDiagnostics = "Saved project to " + path.string();
         return true;
     }
@@ -2622,6 +3563,7 @@ void RenderBuilderApp::LoadProjectFromDisk(const std::filesystem::path& path)
                 assignment.occlusionStrength = static_cast<float>(JsonNumberOr(materialValue, "occlusionStrength", assignment.occlusionStrength));
                 assignment.alphaMode = AlphaModeFromJson(JsonStringOr(materialValue, "alphaMode"), assignment.alphaMode);
                 assignment.alphaCutoff = static_cast<float>(JsonNumberOr(materialValue, "alphaCutoff", assignment.alphaCutoff));
+                assignment.packedOcclusionRoughnessMetallic = JsonBoolOr(materialValue, "packedOcclusionRoughnessMetallic", assignment.packedOcclusionRoughnessMetallic);
                 assignment.flipNormalGreen = JsonBoolOr(materialValue, "flipNormalGreen", assignment.flipNormalGreen);
                 const JsonValue* textures = FindMember(materialValue, "textures");
                 if (textures && textures->type == JsonValue::Type::Object)
@@ -2764,6 +3706,7 @@ void RenderBuilderApp::LoadProjectFromDisk(const std::filesystem::path& path)
         {
             m_sceneDiagnostics += "\n" + environmentDiagnostics;
         }
+        m_assetCatalogDirty = true;
         AddRecentProject(projectPath);
         SetProjectDirty(false);
     }

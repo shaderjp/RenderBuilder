@@ -4,9 +4,20 @@
 
 RenderBuilder は、ランタイム HLSL 開発のための Windows / Visual Studio 2022 向けシェーダエディタのプロトタイプです。
 
+## スクリーンショット
+
+現在の D3D12 preview path は、glTF の Sponza 系 scene と Amazon Lumberyard Bistro の FBX data で確認しています。
+
+![大型 scene preview](<images/RenderBuilder Shader Editor - _Untitled 2026_05_25 22_05_21.png>)
+
+![Bistro / Sponza material preview](<images/RenderBuilder Shader Editor - _Untitled 2026_05_25 22_07_33.png>)
+
+![Bistro / Sponza LookDev preview](<images/RenderBuilder Shader Editor - _Untitled 2026_05_25 22_08_25.png>)
+
 ## ドキュメント
 
 - [シーンファイルと基本操作](Docs/SceneAndControls.ja.md)
+- [シーン例とスクリーンショット](Docs/SceneExamples.ja.md)
 
 ## 現在の MVP
 
@@ -16,19 +27,22 @@ RenderBuilder は、ランタイム HLSL 開発のための Windows / Visual Stu
 - Dear ImGui docking UI による Viewport、Shader Editor、Material Inspector、Scene / Asset Browser、Compile Diagnostics、Renderer Stats パネル。
 - `Shaders/RenderBuilderShaderABI.hlsli` による固定シェーダ ABI。
 - シェーダのコンパイル成功時は D3D12 PSO を再構築し、失敗時は最後に成功した PSO を維持して diagnostics にエラーを表示。
+- Shader Set Manager による duplicate/delete、compile all、profile 編集、material assignment overview、last-good PSO status 表示。
 - 組み込みプレビュー cube と、Assimp による glTF/GLB、FBX、OBJ の scene import。
 - DirectXTex による DDS/TGA/HDR/WIC 画像の material texture slot upload と checker fallback。
 - imported material を material ごとの draw routing と shader set assignment で描画。
+- HDRI/SkyColor background、sun light、tone mapping、display mode、turntable、snapshot、Project JSON 復元を含む LookDev PBR preview。
+- Bistro 系の packed ORM に対応。`Specular` DDS を `R=AO`、`G=Roughness`、`B=Metallic` として評価できます。
 
 ## LookDev ロードマップ
 
-- 専用の `LookDevPBR.hlsl` shader による D3D12 first の PBR preview。
-- HDRI + Sun environment control、tone mapping、debug display mode、turntable preview。
-- Project JSON に scene、material slot、shader assignment、camera、sky、environment、view setting を保存。
+- Sponza / Bistro 規模の大型 asset での応答性を上げるため、progressive texture upload と load diagnostics を強化。
+- texture slot、packed map、tangent basis、alpha、emissive contribution を確認する material debug view を追加。
+- Vulkan / backend 非依存の project data を D3D12 LookDev workflow と揃える。
 
 ## 今後のマイルストーン
 
-- M2: LookDev PBR/IBL workflow、より豊富な shader set 管理、snapshot/export polish。
+- M2: LookDev PBR/IBL workflow、大型 scene polish、material diagnostics、snapshot/export polish。
 - M3: Vulkan SDK の DXC for SPIR-V を使った Vulkan backend parity。
 - M4: meshoptimizer meshlet cache と D3D12/Vulkan Mesh Shader preview。
 - M5: DXR/Vulkan Ray Tracing の実験。

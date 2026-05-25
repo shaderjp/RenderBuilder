@@ -40,6 +40,8 @@ public:
     void Render(float deltaSeconds, const std::vector<std::uint8_t>& vertexShader, const std::vector<std::uint8_t>& pixelShader);
     bool TryApplyShaders(const std::vector<std::uint8_t>& vertexShader, const std::vector<std::uint8_t>& pixelShader, std::string& diagnostics);
     bool TryApplyShaders(const std::string& shaderSetName, const std::vector<std::uint8_t>& vertexShader, const std::vector<std::uint8_t>& pixelShader, std::string& diagnostics);
+    void RenameShaderSetPipeline(const std::string& previousName, const std::string& newName);
+    void RemoveShaderSetPipeline(const std::string& name);
     bool LoadSceneMesh(const ImportedScene& scene, std::string& diagnostics);
     void SetMaterialAssignments(const std::vector<MaterialAssignment>& assignments);
     bool UpdateMaterialTextureSlot(const std::string& materialName, std::uint32_t textureSlot, const std::wstring& path, std::string& diagnostics);
@@ -97,6 +99,7 @@ private:
         float alphaCutoff = 0.5f;
         float alphaMode = 0.0f;
         DirectX::XMFLOAT4 emissiveFactor = DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f);
+        float packedOcclusionRoughnessMetallic = 0.0f;
     };
 
     struct LookDevConstants

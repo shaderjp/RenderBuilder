@@ -109,6 +109,7 @@ struct MaterialAssignment
     float occlusionStrength = 1.0f;
     float alphaCutoff = 0.5f;
     AlphaMode alphaMode = AlphaMode::Opaque;
+    bool packedOcclusionRoughnessMetallic = false;
     bool flipNormalGreen = false;
 };
 
