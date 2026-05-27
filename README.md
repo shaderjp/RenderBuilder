@@ -18,6 +18,8 @@ The current D3D12 preview path is being exercised with both glTF Sponza-style sc
 
 - [Scene files and controls (Japanese)](Docs/SceneAndControls.ja.md)
 - [Scene examples and screenshots (Japanese)](Docs/SceneExamples.ja.md)
+- [Custom shaders and HLSL ABI (Japanese)](Docs/CustomShaders.ja.md)
+- [RenderBuilder MCP Bridge](Tools/RenderBuilderMcp/README.md)
 
 ## Current MVP
 
@@ -33,6 +35,7 @@ The current D3D12 preview path is being exercised with both glTF Sponza-style sc
 - Imported materials are rendered through per-material draw routing and shader set assignment.
 - LookDev PBR preview with HDRI/SkyColor background, sun light, tone mapping, display modes, turntable, snapshots, and Project JSON persistence.
 - Bistro-style packed ORM support: `Specular` DDS maps can be evaluated as `R=AO`, `G=Roughness`, `B=Metallic`.
+- Optional local MCP control bridge for semantic LookDev/material commands through `\\.\pipe\RenderBuilder.Control`.
 
 ## LookDev Roadmap
 
@@ -63,3 +66,20 @@ Command-line build:
 ```
 
 `GrapicsSample` is intentionally ignored and kept as reference material only.
+
+## Local MCP Control
+
+Start RenderBuilder with local control enabled:
+
+```powershell
+Bin\x64\Debug\RenderBuilder.exe --enable-local-control
+```
+
+Then build and run the stdio MCP bridge:
+
+```powershell
+cd Tools\RenderBuilderMcp
+npm install
+npm run build
+node dist\index.js
+```

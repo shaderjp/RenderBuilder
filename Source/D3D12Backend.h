@@ -49,6 +49,7 @@ public:
     void SetSkyColors(const std::array<float, 4>& topColor, const std::array<float, 4>& horizonColor);
     void SetLookDevEnvironment(const LookDevEnvironment& environment);
     void SetLookDevViewSettings(const LookDevViewSettings& viewSettings);
+    void SetLookDevShadowSettings(const LookDevShadowSettings& shadowSettings);
     bool UpdateEnvironmentTexture(const std::wstring& path, std::string& diagnostics);
     void SetDebugViewMode(LookDevDisplayMode displayMode);
     bool SaveSceneSnapshot(const std::wstring& path, std::string& diagnostics);
@@ -76,6 +77,7 @@ public:
     bool HasValidPipeline() const { return m_pipelineState != nullptr; }
     bool HasEnvironmentTexture() const { return m_hasEnvironmentTexture; }
     std::string EnvironmentStatus() const { return m_environmentStatus; }
+    std::string ShadowStatus() const { return m_shadowStatus; }
 
 private:
     struct SceneConstants
@@ -85,6 +87,7 @@ private:
         DirectX::XMFLOAT4X4 viewProjectionInverse;
         DirectX::XMFLOAT4 cameraPositionTime;
         DirectX::XMFLOAT4 lightDirectionIntensity;
+        DirectX::XMFLOAT4X4 shadowViewProjection;
     };
 
     struct MaterialConstants
@@ -110,6 +113,7 @@ private:
         DirectX::XMFLOAT4 iblOptions = DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
         DirectX::XMFLOAT4 skyTopColor = DirectX::XMFLOAT4(0.12f, 0.22f, 0.36f, 1.0f);
         DirectX::XMFLOAT4 skyHorizonColor = DirectX::XMFLOAT4(0.035f, 0.045f, 0.055f, 1.0f);
+        DirectX::XMFLOAT4 shadowOptions = DirectX::XMFLOAT4(1.0f, 0.85f, 0.0015f, 1.5f / 2048.0f);
     };
 
     struct SkyConstants
@@ -143,6 +147,7 @@ private:
     void CreateRenderTargets();
     void CreateSceneTarget();
     void CreateRootSignature();
+    void CreateShadowResources();
     void CreateGeometry();
     void CreateMeshBuffers(const std::vector<SceneVertex>& vertices, const std::vector<std::uint32_t>& indices);
     void CreateDefaultMaterialResources();
@@ -154,18 +159,22 @@ private:
     void CreateConstantBuffer();
     void CreatePipelineState(const std::vector<std::uint8_t>& vertexShader, const std::vector<std::uint8_t>& pixelShader, Microsoft::WRL::ComPtr<ID3D12PipelineState>& outPipelineState);
     void CreateSkyPipelineState();
+    void CreateShadowPipelineState();
     void DrawSky();
+    void RenderShadowMap();
     void InitializeImGui(HWND hwnd);
     void ReleaseRenderTargets();
     void WaitForGpu();
     bool TryWaitForGpu(const char* reason, DWORD timeoutMs);
     void MoveToNextFrame();
     void UpdateConstants(float deltaSeconds);
+    DirectX::XMMATRIX ComputeShadowViewProjection() const;
     void CameraBasis(DirectX::XMVECTOR& forward, DirectX::XMVECTOR& right, DirectX::XMVECTOR& up) const;
     float SceneRadius() const;
     ID3D12PipelineState* PipelineForMaterial(const RenderMaterial& material) const;
     const RenderMaterial& MaterialForDraw(const SceneDraw& draw) const;
     D3D12_CPU_DESCRIPTOR_HANDLE RtvHandle(UINT index) const;
+    D3D12_CPU_DESCRIPTOR_HANDLE DsvHandle(UINT index) const;
     D3D12_CPU_DESCRIPTOR_HANDLE SrvCpuHandle(UINT index) const;
     D3D12_GPU_DESCRIPTOR_HANDLE SrvGpuHandle(UINT index) const;
     void ThrowIfFailed(HRESULT hr, const char* message) const;
@@ -195,16 +204,19 @@ private:
     UINT64 m_nextFenceValue = 1;
     UINT m_frameIndex = 0;
     UINT m_rtvDescriptorSize = 0;
+    UINT m_dsvDescriptorSize = 0;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pipelineState;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_skyPipelineState;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_shadowPipelineState;
     std::unordered_map<std::string, Microsoft::WRL::ComPtr<ID3D12PipelineState>> m_pipelineStates;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_vertexBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_indexBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_constantBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_sceneTarget;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_sceneDepth;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowMap;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_fallbackTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_environmentTexture;
     std::vector<std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, static_cast<std::size_t>(TextureSlot::Count)>> m_materialTextures;
@@ -216,6 +228,7 @@ private:
     UINT m_indexCount = 0;
     std::uint8_t* m_constantBufferMapped = nullptr;
     D3D12_RESOURCE_STATES m_sceneTargetState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    D3D12_RESOURCE_STATES m_shadowMapState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     D3D12_CPU_DESCRIPTOR_HANDLE m_sceneSrvCpu = {};
     D3D12_GPU_DESCRIPTOR_HANDLE m_sceneSrvGpu = {};
     SrvAllocator m_srvAllocator;
@@ -236,7 +249,10 @@ private:
     SkyConstants m_skyConstants;
     LookDevEnvironment m_lookDevEnvironment;
     LookDevViewSettings m_lookDevViewSettings;
+    LookDevShadowSettings m_lookDevShadowSettings;
     LookDevConstants m_lookDevConstants;
+    UINT m_shadowResolution = 2048;
+    std::string m_shadowStatus = "Sun shadow enabled: 2048.";
     bool m_hasEnvironmentTexture = false;
     UINT m_environmentMipLevels = 1;
     std::string m_environmentStatus = "Using SkyColor background.";

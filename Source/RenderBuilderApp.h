@@ -2,6 +2,7 @@
 
 #include "D3D12Backend.h"
 #include "EditorTypes.h"
+#include "LocalControlService.h"
 #include "SceneImporter.h"
 #include "ShaderCompiler.h"
 
@@ -67,8 +68,12 @@ private:
     void DrawAssetCatalogPanel();
     void DrawShaderSetManagement();
     void DrawMaterialShaderAssignmentOverview();
+    void DrawAutomationPanel();
     void DrawDiagnosticsPanel();
     void DrawStatsPanel();
+    void ProcessLocalControlRequests();
+    std::string HandleLocalControlRequest(const std::string& requestText);
+    void SetLocalControlEnabled(bool enabled);
     void CompileActiveShader();
     void CompileAllShaderSets();
     bool CompileShaderSet(ShaderSet& shaderSet, std::vector<std::uint8_t>* vertexShader, std::vector<std::uint8_t>* pixelShader, std::string& diagnostics);
@@ -118,6 +123,9 @@ private:
     std::wstring EffectiveTexturePath(const MaterialAssignment& assignment, std::size_t textureSlot) const;
     void ApplyMaterialTextureSlot(const MaterialAssignment& assignment, std::size_t textureSlot);
     std::string ApplyMaterialTextureOverrides(const std::vector<MaterialAssignment>& assignments);
+    std::string BuildControlStateJson() const;
+    std::string BuildControlMaterialsJson() const;
+    std::string BuildControlDiagnosticsJson() const;
     std::filesystem::path FindRootDirectory() const;
     std::filesystem::path OpenFileDialog(const wchar_t* filter) const;
     std::filesystem::path SaveFileDialog(const wchar_t* filter, const wchar_t* defaultExtension) const;
@@ -142,6 +150,7 @@ private:
     std::unique_ptr<DxcShaderCompiler> m_shaderCompiler;
     D3D12Backend m_backend;
     SceneImporter m_sceneImporter;
+    LocalControlService m_localControlService;
 
     ProjectFile m_project;
     std::vector<SceneMaterial> m_sceneMaterials;
@@ -170,6 +179,10 @@ private:
     char m_assetSearchBuffer[128] = {};
     bool m_assetCatalogDirty = true;
     std::unordered_map<std::string, ShaderSetRuntimeStatus> m_shaderSetStatus;
+    bool m_localControlEnabled = false;
+    std::uint64_t m_controlStateVersion = 1;
+    std::string m_controlLastCommand = "<none>";
+    std::string m_controlLastError;
 
     std::chrono::high_resolution_clock::time_point m_lastTick;
 };

@@ -50,6 +50,9 @@ vcpkg_installed/
 Testing/
 .cache/
 
+node_modules/
+Tools/RenderBuilderMcp/dist/
+
 ThirdParty/assimp/Build/
 ThirdParty/DirectXTex/DirectXTex/Bin/
 ThirdParty/DirectXTex/DirectXTex/Obj/

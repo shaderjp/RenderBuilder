@@ -7,10 +7,12 @@
 #include <CommCtrl.h>
 #include <commdlg.h>
 #include <Objbase.h>
+#include <shellapi.h>
 
 #include <algorithm>
 #include <cfloat>
 #include <cctype>
+#include <cwchar>
 #include <cwctype>
 #include <cstdio>
 #include <cstring>
@@ -154,6 +156,11 @@ std::string TrimAscii(std::string text)
     return std::string(first, last);
 }
 
+float ClampFloat(float value, float minimum, float maximum)
+{
+    return std::max(minimum, std::min(maximum, value));
+}
+
 const char* AssetKindName(rb::AssetKind kind)
 {
     switch (kind)
@@ -265,6 +272,7 @@ const char* DisplayModeName(rb::LookDevDisplayMode mode)
     case rb::LookDevDisplayMode::AmbientOcclusion: return "AO";
     case rb::LookDevDisplayMode::Emissive: return "Emissive";
     case rb::LookDevDisplayMode::LightingOnly: return "LightingOnly";
+    case rb::LookDevDisplayMode::ShadowMask: return "ShadowMask";
     default: return "Beauty";
     }
 }
@@ -316,6 +324,7 @@ std::string DisplayModeJsonName(rb::LookDevDisplayMode mode)
     case rb::LookDevDisplayMode::AmbientOcclusion: return "AmbientOcclusion";
     case rb::LookDevDisplayMode::Emissive: return "Emissive";
     case rb::LookDevDisplayMode::LightingOnly: return "LightingOnly";
+    case rb::LookDevDisplayMode::ShadowMask: return "ShadowMask";
     case rb::LookDevDisplayMode::Beauty:
     default:
         return "Beauty";
@@ -355,6 +364,7 @@ rb::LookDevDisplayMode DisplayModeFromJson(const std::string& text, rb::LookDevD
     if (text == "AmbientOcclusion" || text == "AO") { return rb::LookDevDisplayMode::AmbientOcclusion; }
     if (text == "Emissive") { return rb::LookDevDisplayMode::Emissive; }
     if (text == "LightingOnly") { return rb::LookDevDisplayMode::LightingOnly; }
+    if (text == "ShadowMask") { return rb::LookDevDisplayMode::ShadowMask; }
     if (text == "Beauty") { return rb::LookDevDisplayMode::Beauty; }
     return fallback;
 }
@@ -857,6 +867,172 @@ std::array<float, 3> JsonFloat3Or(const JsonValue& value, const char* name, cons
     return result;
 }
 
+std::string JsonIdValue(const std::string& id)
+{
+    return id.empty() ? "null" : "\"" + EscapeJson(id) + "\"";
+}
+
+const char* BoolJson(bool value)
+{
+    return value ? "true" : "false";
+}
+
+std::string Float3Json(const std::array<float, 3>& value)
+{
+    std::ostringstream json;
+    json << "[" << value[0] << "," << value[1] << "," << value[2] << "]";
+    return json.str();
+}
+
+std::string Float4Json(const std::array<float, 4>& value)
+{
+    std::ostringstream json;
+    json << "[" << value[0] << "," << value[1] << "," << value[2] << "," << value[3] << "]";
+    return json.str();
+}
+
+std::string Float3Json(const DirectX::XMFLOAT3& value)
+{
+    std::ostringstream json;
+    json << "[" << value.x << "," << value.y << "," << value.z << "]";
+    return json.str();
+}
+
+std::string Float4Json(const DirectX::XMFLOAT4& value)
+{
+    std::ostringstream json;
+    json << "[" << value.x << "," << value.y << "," << value.z << "," << value.w << "]";
+    return json.str();
+}
+
+std::string ControlErrorResponse(const std::string& id, const std::string& code, const std::string& message)
+{
+    std::ostringstream json;
+    json << "{\"id\":" << JsonIdValue(id)
+         << ",\"ok\":false,\"error\":{\"code\":\"" << EscapeJson(code)
+         << "\",\"message\":\"" << EscapeJson(message) << "\"}}";
+    return json.str();
+}
+
+std::string ControlSuccessResponse(const std::string& id, std::uint64_t stateVersion, const std::string& resultJson, const std::string& diagnosticsJson = "[]")
+{
+    std::ostringstream json;
+    json << "{\"id\":" << JsonIdValue(id)
+         << ",\"ok\":true,\"stateVersion\":" << stateVersion
+         << ",\"result\":" << (resultJson.empty() ? "{}" : resultJson)
+         << ",\"diagnostics\":" << diagnosticsJson << "}";
+    return json.str();
+}
+
+const JsonValue* OptionalMember(const JsonValue& value, const char* name)
+{
+    return FindMember(value, name);
+}
+
+void ReadOptionalNumber(const JsonValue& value, const char* name, float minValue, float maxValue, float& target)
+{
+    const JsonValue* member = OptionalMember(value, name);
+    if (!member)
+    {
+        return;
+    }
+    if (member->type != JsonValue::Type::Number || member->number < minValue || member->number > maxValue)
+    {
+        throw std::runtime_error(std::string(name) + " must be a number in range.");
+    }
+    target = static_cast<float>(member->number);
+}
+
+void ReadOptionalBool(const JsonValue& value, const char* name, bool& target)
+{
+    const JsonValue* member = OptionalMember(value, name);
+    if (!member)
+    {
+        return;
+    }
+    if (member->type != JsonValue::Type::Bool)
+    {
+        throw std::runtime_error(std::string(name) + " must be a boolean.");
+    }
+    target = member->boolean;
+}
+
+void ReadOptionalFloat3(const JsonValue& value, const char* name, float minValue, float maxValue, std::array<float, 3>& target)
+{
+    const JsonValue* member = OptionalMember(value, name);
+    if (!member)
+    {
+        return;
+    }
+    if (member->type != JsonValue::Type::Array || member->array.size() != 3)
+    {
+        throw std::runtime_error(std::string(name) + " must be a float[3].");
+    }
+    std::array<float, 3> result = target;
+    for (std::size_t i = 0; i < result.size(); ++i)
+    {
+        if (member->array[i].type != JsonValue::Type::Number || member->array[i].number < minValue || member->array[i].number > maxValue)
+        {
+            throw std::runtime_error(std::string(name) + " contains a value outside the allowed range.");
+        }
+        result[i] = static_cast<float>(member->array[i].number);
+    }
+    target = result;
+}
+
+void ReadOptionalFloat4(const JsonValue& value, const char* name, float minValue, float maxValue, std::array<float, 4>& target)
+{
+    const JsonValue* member = OptionalMember(value, name);
+    if (!member)
+    {
+        return;
+    }
+    if (member->type != JsonValue::Type::Array || member->array.size() != 4)
+    {
+        throw std::runtime_error(std::string(name) + " must be a float[4].");
+    }
+    std::array<float, 4> result = target;
+    for (std::size_t i = 0; i < result.size(); ++i)
+    {
+        if (member->array[i].type != JsonValue::Type::Number || member->array[i].number < minValue || member->array[i].number > maxValue)
+        {
+            throw std::runtime_error(std::string(name) + " contains a value outside the allowed range.");
+        }
+        result[i] = static_cast<float>(member->array[i].number);
+    }
+    target = result;
+}
+
+rb::LookDevBackgroundMode ReadBackgroundMode(const std::string& text)
+{
+    if (text == "SkyColor") { return rb::LookDevBackgroundMode::SkyColor; }
+    if (text == "Hdri" || text == "HDRI") { return rb::LookDevBackgroundMode::Hdri; }
+    if (text == "TransparentChecker") { return rb::LookDevBackgroundMode::TransparentChecker; }
+    throw std::runtime_error("backgroundMode must be SkyColor, Hdri, or TransparentChecker.");
+}
+
+rb::ToneMapper ReadToneMapper(const std::string& text)
+{
+    if (text == "None") { return rb::ToneMapper::None; }
+    if (text == "Reinhard") { return rb::ToneMapper::Reinhard; }
+    if (text == "Aces" || text == "ACES") { return rb::ToneMapper::Aces; }
+    throw std::runtime_error("toneMapper must be None, Reinhard, or Aces.");
+}
+
+rb::LookDevDisplayMode ReadDisplayMode(const std::string& text)
+{
+    if (text == "Beauty") { return rb::LookDevDisplayMode::Beauty; }
+    if (text == "BaseColor") { return rb::LookDevDisplayMode::BaseColor; }
+    if (text == "Normal") { return rb::LookDevDisplayMode::Normal; }
+    if (text == "Roughness") { return rb::LookDevDisplayMode::Roughness; }
+    if (text == "Metallic") { return rb::LookDevDisplayMode::Metallic; }
+    if (text == "AmbientOcclusion" || text == "AO") { return rb::LookDevDisplayMode::AmbientOcclusion; }
+    if (text == "Emissive") { return rb::LookDevDisplayMode::Emissive; }
+    if (text == "LightingOnly") { return rb::LookDevDisplayMode::LightingOnly; }
+    if (text == "ShadowMask") { return rb::LookDevDisplayMode::ShadowMask; }
+    throw std::runtime_error("displayMode is not supported.");
+}
+
 rb::LookDevEnvironment JsonLookDevEnvironmentOr(
     const JsonValue& value,
     const std::filesystem::path& projectDirectory,
@@ -884,6 +1060,30 @@ rb::LookDevViewSettings JsonLookDevViewSettingsOr(const JsonValue& value, const 
     viewSettings.turntableEnabled = JsonBoolOr(value, "turntableEnabled", viewSettings.turntableEnabled);
     viewSettings.turntableSpeed = static_cast<float>(JsonNumberOr(value, "turntableSpeed", viewSettings.turntableSpeed));
     return viewSettings;
+}
+
+rb::LookDevShadowSettings JsonLookDevShadowSettingsOr(const JsonValue& value, const rb::LookDevShadowSettings& fallback)
+{
+    rb::LookDevShadowSettings shadowSettings = fallback;
+    shadowSettings.enabled = JsonBoolOr(value, "enabled", shadowSettings.enabled);
+    shadowSettings.resolution = static_cast<std::uint32_t>(JsonNumberOr(value, "resolution", shadowSettings.resolution));
+    if (shadowSettings.resolution <= 1024)
+    {
+        shadowSettings.resolution = 1024;
+    }
+    else if (shadowSettings.resolution <= 2048)
+    {
+        shadowSettings.resolution = 2048;
+    }
+    else
+    {
+        shadowSettings.resolution = 4096;
+    }
+    shadowSettings.strength = ClampFloat(static_cast<float>(JsonNumberOr(value, "strength", shadowSettings.strength)), 0.0f, 1.0f);
+    shadowSettings.bias = ClampFloat(static_cast<float>(JsonNumberOr(value, "bias", shadowSettings.bias)), 0.0f, 0.05f);
+    shadowSettings.softness = ClampFloat(static_cast<float>(JsonNumberOr(value, "softness", shadowSettings.softness)), 0.0f, 8.0f);
+    shadowSettings.fitScale = ClampFloat(static_cast<float>(JsonNumberOr(value, "fitScale", shadowSettings.fitScale)), 1.0f, 4.0f);
+    return shadowSettings;
 }
 }
 
@@ -913,6 +1113,7 @@ int RenderBuilderApp::Run(HINSTANCE instance, int showCommand)
                 Tick();
             }
         }
+        m_localControlService.Stop();
         m_backend.Shutdown();
         if (m_comInitialized)
         {
@@ -923,6 +1124,7 @@ int RenderBuilderApp::Run(HINSTANCE instance, int showCommand)
     }
     catch (const std::exception& ex)
     {
+        m_localControlService.Stop();
         m_backend.Shutdown();
         if (m_comInitialized)
         {
@@ -987,6 +1189,20 @@ void RenderBuilderApp::Initialize(HINSTANCE instance, int showCommand)
     LoadDefaultShader();
     CompileActiveShader();
     SetProjectDirty(false);
+    int argumentCount = 0;
+    PWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
+    if (arguments)
+    {
+        for (int i = 0; i < argumentCount; ++i)
+        {
+            if (std::wcscmp(arguments[i], L"--enable-local-control") == 0)
+            {
+                SetLocalControlEnabled(true);
+                break;
+            }
+        }
+        LocalFree(arguments);
+    }
     m_lastTick = std::chrono::high_resolution_clock::now();
 }
 
@@ -1048,6 +1264,7 @@ void RenderBuilderApp::LoadDefaultShader()
     m_backend.SetSkyColors(m_project.skyTopColor, m_project.skyHorizonColor);
     m_backend.SetLookDevEnvironment(m_project.lookDevEnvironment);
     m_backend.SetLookDevViewSettings(m_project.lookDevViewSettings);
+    m_backend.SetLookDevShadowSettings(m_project.lookDevShadowSettings);
 }
 
 void RenderBuilderApp::UpdateWindowTitle() const
@@ -1128,6 +1345,7 @@ LookDevPreset RenderBuilderApp::CaptureCurrentLookDevPreset(const std::string& n
     preset.skyHorizonColor = m_project.skyHorizonColor;
     preset.environment = m_project.lookDevEnvironment;
     preset.viewSettings = m_project.lookDevViewSettings;
+    preset.shadowSettings = m_project.lookDevShadowSettings;
     preset.preserveEnvironmentPath = false;
     return preset;
 }
@@ -1162,6 +1380,7 @@ void RenderBuilderApp::ApplyLookDevPreset(std::size_t index)
     m_project.skyHorizonColor = preset.skyHorizonColor;
     m_project.lookDevEnvironment = preset.environment;
     m_project.lookDevViewSettings = preset.viewSettings;
+    m_project.lookDevShadowSettings = preset.shadowSettings;
     m_project.activeLookDevPresetName = preset.name;
 
     if (preset.preserveEnvironmentPath && m_project.lookDevEnvironment.environmentPath.empty())
@@ -1705,6 +1924,8 @@ void RenderBuilderApp::Tick()
         return;
     }
 
+    ProcessLocalControlRequests();
+
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
@@ -1802,6 +2023,7 @@ void RenderBuilderApp::DrawUi()
     DrawShaderEditorPanel();
     DrawMaterialInspectorPanel();
     DrawAssetBrowserPanel();
+    DrawAutomationPanel();
     DrawDiagnosticsPanel();
     DrawStatsPanel();
 }
@@ -2579,6 +2801,20 @@ void RenderBuilderApp::DrawAssetBrowserPanel()
     lookDevChanged |= ImGui::SliderFloat3("Sun Direction", m_project.lookDevEnvironment.sunDirection.data(), -1.0f, 1.0f, "%.2f");
     lookDevChanged |= ImGui::ColorEdit3("Sun Color", m_project.lookDevEnvironment.sunColor.data());
     lookDevChanged |= ImGui::SliderFloat("Sun Intensity", &m_project.lookDevEnvironment.sunIntensity, 0.0f, 10.0f, "%.2f");
+    bool shadowChanged = false;
+    shadowChanged |= ImGui::Checkbox("Sun Shadow", &m_project.lookDevShadowSettings.enabled);
+    const char* shadowResolutions[] = { "1024", "2048", "4096" };
+    int shadowResolutionIndex = m_project.lookDevShadowSettings.resolution >= 4096 ? 2 : (m_project.lookDevShadowSettings.resolution >= 2048 ? 1 : 0);
+    if (ImGui::Combo("Shadow Resolution", &shadowResolutionIndex, shadowResolutions, _countof(shadowResolutions)))
+    {
+        const std::uint32_t values[] = { 1024u, 2048u, 4096u };
+        m_project.lookDevShadowSettings.resolution = values[shadowResolutionIndex];
+        shadowChanged = true;
+    }
+    shadowChanged |= ImGui::SliderFloat("Shadow Strength", &m_project.lookDevShadowSettings.strength, 0.0f, 1.0f, "%.2f");
+    shadowChanged |= ImGui::SliderFloat("Shadow Bias", &m_project.lookDevShadowSettings.bias, 0.0f, 0.02f, "%.4f");
+    shadowChanged |= ImGui::SliderFloat("Shadow Softness", &m_project.lookDevShadowSettings.softness, 0.0f, 8.0f, "%.2f");
+    shadowChanged |= ImGui::SliderFloat("Shadow Fit Scale", &m_project.lookDevShadowSettings.fitScale, 1.0f, 4.0f, "%.2f");
     lookDevChanged |= ImGui::SliderFloat("Exposure", &m_project.lookDevViewSettings.exposure, -8.0f, 8.0f, "%.2f EV");
     lookDevChanged |= ImGui::SliderFloat("Gamma", &m_project.lookDevViewSettings.gamma, 1.0f, 3.0f, "%.2f");
     ImGui::PopItemWidth();
@@ -2590,7 +2826,7 @@ void RenderBuilderApp::DrawAssetBrowserPanel()
         m_project.lookDevViewSettings.toneMapper = static_cast<ToneMapper>(toneMapper);
         lookDevChanged = true;
     }
-    const char* displayModes[] = { "Beauty", "BaseColor", "Normal", "Roughness", "Metallic", "AO", "Emissive", "LightingOnly" };
+    const char* displayModes[] = { "Beauty", "BaseColor", "Normal", "Roughness", "Metallic", "AO", "Emissive", "LightingOnly", "ShadowMask" };
     int displayMode = static_cast<int>(m_project.lookDevViewSettings.displayMode);
     if (ImGui::Combo("Display Mode", &displayMode, displayModes, _countof(displayModes)))
     {
@@ -2609,7 +2845,7 @@ void RenderBuilderApp::DrawAssetBrowserPanel()
         lookDevChanged = true;
     }
     ImGui::PopItemWidth();
-    if (lookDevChanged)
+    if (lookDevChanged || shadowChanged)
     {
         MarkLookDevCustom();
         ApplyLookDevSettings();
@@ -2847,6 +3083,34 @@ void RenderBuilderApp::DrawDiagnosticsPanel()
     ImGui::End();
 }
 
+void RenderBuilderApp::DrawAutomationPanel()
+{
+    ImGui::Begin("Automation");
+    bool enabled = m_localControlEnabled;
+    if (ImGui::Checkbox("Enable Local Control", &enabled))
+    {
+        SetLocalControlEnabled(enabled);
+    }
+
+    const LocalControlStatus status = m_localControlService.Status();
+    ImGui::Text("Transport: Named Pipe");
+    ImGui::Text("Pipe: %s", status.pipeName.c_str());
+    ImGui::Text("Status: %s", status.enabled ? "enabled" : "disabled");
+    ImGui::Text("Connected bridges: %u", status.connectedClientCount);
+    ImGui::Text("State version: %llu", static_cast<unsigned long long>(m_controlStateVersion));
+    ImGui::TextWrapped("Last command: %s", m_controlLastCommand.c_str());
+    if (!m_controlLastError.empty())
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "Last error: %s", m_controlLastError.c_str());
+    }
+    if (!status.lastTransportError.empty())
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f), "Transport: %s", status.lastTransportError.c_str());
+    }
+    ImGui::TextDisabled("Launch with --enable-local-control to enable this automatically.");
+    ImGui::End();
+}
+
 void RenderBuilderApp::DrawStatsPanel()
 {
     const BackendCapabilities caps = m_backend.Capabilities();
@@ -2859,6 +3123,7 @@ void RenderBuilderApp::DrawStatsPanel()
     ImGui::Text("Vertex count: %u", m_backend.VertexCount());
     ImGui::Text("Index count: %u", m_backend.IndexCount());
     ImGui::Text("Environment: %s", m_backend.HasEnvironmentTexture() ? "HDRI loaded" : "fallback");
+    ImGui::Text("Shadow: %s", m_backend.ShadowStatus().c_str());
     ImGui::Text("Background: %s", BackgroundModeName(m_project.lookDevEnvironment.backgroundMode));
     ImGui::Text("Exposure: %.2f EV", m_project.lookDevViewSettings.exposure);
     ImGui::Text("Display: %s", DisplayModeName(m_project.lookDevViewSettings.displayMode));
@@ -3099,6 +3364,390 @@ std::string RenderBuilderApp::ApplyMaterialTextureOverrides(const std::vector<Ma
     return diagnostics.str();
 }
 
+void RenderBuilderApp::SetLocalControlEnabled(bool enabled)
+{
+    if (enabled == m_localControlEnabled)
+    {
+        return;
+    }
+
+    if (enabled)
+    {
+        if (m_localControlService.Start())
+        {
+            m_localControlEnabled = true;
+            m_controlLastError.clear();
+            m_sceneDiagnostics = "Local control enabled on \\\\.\\pipe\\RenderBuilder.Control.";
+        }
+        else
+        {
+            m_localControlEnabled = false;
+            m_controlLastError = "Failed to start local control service.";
+            m_sceneDiagnostics = m_controlLastError;
+        }
+    }
+    else
+    {
+        m_localControlService.Stop();
+        m_localControlEnabled = false;
+        m_sceneDiagnostics = "Local control disabled.";
+    }
+}
+
+void RenderBuilderApp::ProcessLocalControlRequests()
+{
+    constexpr std::size_t MaxRequestsPerFrame = 16;
+    for (std::size_t i = 0; i < MaxRequestsPerFrame; ++i)
+    {
+        std::shared_ptr<LocalControlRequest> request = m_localControlService.TryPopRequest();
+        if (!request)
+        {
+            break;
+        }
+
+        std::string response = HandleLocalControlRequest(request->text);
+        m_localControlService.CompleteRequest(request, response);
+    }
+}
+
+std::string RenderBuilderApp::BuildControlDiagnosticsJson() const
+{
+    std::ostringstream json;
+    json << "{"
+         << "\"compile\":\"" << EscapeJson(m_compileDiagnostics) << "\","
+         << "\"scene\":\"" << EscapeJson(m_sceneDiagnostics) << "\","
+         << "\"localControl\":{\"lastCommand\":\"" << EscapeJson(m_controlLastCommand)
+         << "\",\"lastError\":\"" << EscapeJson(m_controlLastError) << "\"}"
+         << "}";
+    return json.str();
+}
+
+std::string RenderBuilderApp::BuildControlMaterialsJson() const
+{
+    std::ostringstream json;
+    json << "{\"materials\":[";
+    for (std::size_t materialIndex = 0; materialIndex < m_project.materialAssignments.size(); ++materialIndex)
+    {
+        const MaterialAssignment& material = m_project.materialAssignments[materialIndex];
+        json << "{"
+             << "\"name\":\"" << EscapeJson(material.materialName) << "\","
+             << "\"shaderSet\":\"" << EscapeJson(material.shaderSetName) << "\","
+             << "\"baseColorFactor\":" << Float4Json(material.baseColorFactor) << ","
+             << "\"emissiveFactor\":" << Float4Json(material.emissiveFactor) << ","
+             << "\"roughnessFactor\":" << material.roughnessFactor << ","
+             << "\"metallicFactor\":" << material.metallicFactor << ","
+             << "\"normalStrength\":" << material.normalStrength << ","
+             << "\"occlusionStrength\":" << material.occlusionStrength << ","
+             << "\"alphaMode\":\"" << EscapeJson(AlphaModeJsonName(material.alphaMode)) << "\","
+             << "\"alphaCutoff\":" << material.alphaCutoff << ","
+             << "\"packedOcclusionRoughnessMetallic\":" << BoolJson(material.packedOcclusionRoughnessMetallic) << ","
+             << "\"flipNormalGreen\":" << BoolJson(material.flipNormalGreen) << ","
+             << "\"textures\":{";
+        for (std::size_t textureSlot = 0; textureSlot < MaterialTextureSlotCount; ++textureSlot)
+        {
+            const std::wstring importedPath = ImportedTexturePath(material.materialName, textureSlot);
+            const std::wstring effectivePath = EffectiveTexturePath(material, textureSlot);
+            json << "\"" << TextureSlotJsonNames[textureSlot] << "\":{"
+                 << "\"override\":" << BoolJson(material.textureOverrideEnabled[textureSlot]) << ","
+                 << "\"importedPath\":\"" << EscapeJson(WideToUtf8(importedPath)) << "\","
+                 << "\"effectivePath\":\"" << EscapeJson(WideToUtf8(effectivePath)) << "\""
+                 << "}";
+            if (textureSlot + 1 < MaterialTextureSlotCount)
+            {
+                json << ",";
+            }
+        }
+        json << "}}";
+        if (materialIndex + 1 < m_project.materialAssignments.size())
+        {
+            json << ",";
+        }
+    }
+    json << "]}";
+    return json.str();
+}
+
+std::string RenderBuilderApp::BuildControlStateJson() const
+{
+    const ViewportCamera camera = m_backend.CameraState();
+    std::ostringstream json;
+    json << "{"
+         << "\"stateVersion\":" << m_controlStateVersion << ","
+         << "\"scene\":{\"path\":\"" << EscapeJson(WideToUtf8(m_project.scenePath)) << "\","
+         << "\"vertices\":" << m_sceneVertexCount << ","
+         << "\"indices\":" << m_sceneIndexCount << ","
+         << "\"draws\":" << m_sceneDrawCount << "},"
+         << "\"camera\":{\"target\":" << Float3Json(camera.target)
+         << ",\"yaw\":" << camera.yaw
+         << ",\"pitch\":" << camera.pitch
+         << ",\"distance\":" << camera.distance << "},"
+         << "\"sky\":{\"top\":" << Float4Json(m_project.skyTopColor)
+         << ",\"horizon\":" << Float4Json(m_project.skyHorizonColor) << "},"
+         << "\"environment\":{\"path\":\"" << EscapeJson(WideToUtf8(m_project.lookDevEnvironment.environmentPath))
+         << "\",\"rotationYaw\":" << m_project.lookDevEnvironment.rotationYaw
+         << ",\"intensity\":" << m_project.lookDevEnvironment.intensity
+         << ",\"backgroundMode\":\"" << EscapeJson(BackgroundModeJsonName(m_project.lookDevEnvironment.backgroundMode)) << "\""
+         << ",\"sunDirection\":" << Float3Json(m_project.lookDevEnvironment.sunDirection)
+         << ",\"sunColor\":" << Float3Json(m_project.lookDevEnvironment.sunColor)
+         << ",\"sunIntensity\":" << m_project.lookDevEnvironment.sunIntensity << "},"
+         << "\"viewSettings\":{\"exposure\":" << m_project.lookDevViewSettings.exposure
+         << ",\"gamma\":" << m_project.lookDevViewSettings.gamma
+         << ",\"toneMapper\":\"" << EscapeJson(ToneMapperJsonName(m_project.lookDevViewSettings.toneMapper)) << "\""
+         << ",\"displayMode\":\"" << EscapeJson(DisplayModeJsonName(m_project.lookDevViewSettings.displayMode)) << "\""
+         << ",\"turntableEnabled\":" << BoolJson(m_project.lookDevViewSettings.turntableEnabled)
+         << ",\"turntableSpeed\":" << m_project.lookDevViewSettings.turntableSpeed << "},"
+         << "\"shadowSettings\":{\"enabled\":" << BoolJson(m_project.lookDevShadowSettings.enabled)
+         << ",\"resolution\":" << m_project.lookDevShadowSettings.resolution
+         << ",\"strength\":" << m_project.lookDevShadowSettings.strength
+         << ",\"bias\":" << m_project.lookDevShadowSettings.bias
+         << ",\"softness\":" << m_project.lookDevShadowSettings.softness
+         << ",\"fitScale\":" << m_project.lookDevShadowSettings.fitScale
+         << ",\"status\":\"" << EscapeJson(m_backend.ShadowStatus()) << "\"},"
+         << "\"activeShaderSet\":\"" << EscapeJson(m_activeShaderSet.name) << "\","
+         << "\"materialCount\":" << m_project.materialAssignments.size() << ","
+         << "\"diagnostics\":" << BuildControlDiagnosticsJson()
+         << "}";
+    return json.str();
+}
+
+std::string RenderBuilderApp::HandleLocalControlRequest(const std::string& requestText)
+{
+    std::string id;
+    std::string method = "<parse>";
+    try
+    {
+        std::string normalizedRequestText = requestText;
+        if (normalizedRequestText.size() >= 3
+            && static_cast<unsigned char>(normalizedRequestText[0]) == 0xef
+            && static_cast<unsigned char>(normalizedRequestText[1]) == 0xbb
+            && static_cast<unsigned char>(normalizedRequestText[2]) == 0xbf)
+        {
+            normalizedRequestText.erase(0, 3);
+        }
+        const JsonValue request = JsonParser(normalizedRequestText).Parse();
+        if (request.type != JsonValue::Type::Object)
+        {
+            throw std::runtime_error("Local control request must be a JSON object.");
+        }
+
+        const JsonValue* idValue = FindMember(request, "id");
+        if (idValue && idValue->type == JsonValue::Type::String)
+        {
+            id = idValue->string;
+        }
+        method = JsonStringOr(request, "method");
+        if (method.empty())
+        {
+            throw std::runtime_error("method is required.");
+        }
+        m_controlLastCommand = method;
+
+        JsonValue emptyParams;
+        emptyParams.type = JsonValue::Type::Object;
+        const JsonValue* params = FindMember(request, "params");
+        if (!params)
+        {
+            params = &emptyParams;
+        }
+        if (params->type != JsonValue::Type::Object)
+        {
+            throw std::runtime_error("params must be an object.");
+        }
+
+        if (method == "get_state")
+        {
+            m_controlLastError.clear();
+            return ControlSuccessResponse(id, m_controlStateVersion, BuildControlStateJson());
+        }
+        if (method == "list_materials")
+        {
+            m_controlLastError.clear();
+            return ControlSuccessResponse(id, m_controlStateVersion, BuildControlMaterialsJson());
+        }
+        if (method == "get_diagnostics")
+        {
+            m_controlLastError.clear();
+            return ControlSuccessResponse(id, m_controlStateVersion, BuildControlDiagnosticsJson());
+        }
+        if (method == "set_view_settings")
+        {
+            LookDevViewSettings viewSettings = m_project.lookDevViewSettings;
+            ReadOptionalNumber(*params, "exposure", -16.0f, 16.0f, viewSettings.exposure);
+            ReadOptionalNumber(*params, "gamma", 0.1f, 5.0f, viewSettings.gamma);
+            ReadOptionalBool(*params, "turntableEnabled", viewSettings.turntableEnabled);
+            ReadOptionalNumber(*params, "turntableSpeed", -10.0f, 10.0f, viewSettings.turntableSpeed);
+            if (const JsonValue* toneMapper = FindMember(*params, "toneMapper"))
+            {
+                if (toneMapper->type != JsonValue::Type::String)
+                {
+                    throw std::runtime_error("toneMapper must be a string.");
+                }
+                viewSettings.toneMapper = ReadToneMapper(toneMapper->string);
+            }
+            if (const JsonValue* displayMode = FindMember(*params, "displayMode"))
+            {
+                if (displayMode->type != JsonValue::Type::String)
+                {
+                    throw std::runtime_error("displayMode must be a string.");
+                }
+                viewSettings.displayMode = ReadDisplayMode(displayMode->string);
+            }
+
+            m_project.lookDevViewSettings = viewSettings;
+            MarkLookDevCustom();
+            ApplyLookDevSettings();
+            MarkProjectDirty();
+            ++m_controlStateVersion;
+            m_controlLastError.clear();
+            return ControlSuccessResponse(id, m_controlStateVersion, "{\"updated\":true}");
+        }
+        if (method == "set_environment_settings")
+        {
+            LookDevEnvironment environment = m_project.lookDevEnvironment;
+            std::array<float, 4> skyTopColor = m_project.skyTopColor;
+            std::array<float, 4> skyHorizonColor = m_project.skyHorizonColor;
+            ReadOptionalFloat4(*params, "skyTopColor", 0.0f, 1.0f, skyTopColor);
+            ReadOptionalFloat4(*params, "skyHorizonColor", 0.0f, 1.0f, skyHorizonColor);
+            ReadOptionalNumber(*params, "rotationYaw", -6.2831855f, 6.2831855f, environment.rotationYaw);
+            ReadOptionalNumber(*params, "intensity", 0.0f, 8.0f, environment.intensity);
+            if (const JsonValue* backgroundMode = FindMember(*params, "backgroundMode"))
+            {
+                if (backgroundMode->type != JsonValue::Type::String)
+                {
+                    throw std::runtime_error("backgroundMode must be a string.");
+                }
+                environment.backgroundMode = ReadBackgroundMode(backgroundMode->string);
+            }
+
+            m_project.skyTopColor = skyTopColor;
+            m_project.skyHorizonColor = skyHorizonColor;
+            m_project.lookDevEnvironment = environment;
+            m_backend.SetSkyColors(m_project.skyTopColor, m_project.skyHorizonColor);
+            MarkLookDevCustom();
+            ApplyLookDevSettings();
+            MarkProjectDirty();
+            ++m_controlStateVersion;
+            m_controlLastError.clear();
+            return ControlSuccessResponse(id, m_controlStateVersion, "{\"updated\":true}");
+        }
+        if (method == "set_sun_settings")
+        {
+            LookDevEnvironment environment = m_project.lookDevEnvironment;
+            ReadOptionalFloat3(*params, "sunDirection", -1.0f, 1.0f, environment.sunDirection);
+            ReadOptionalFloat3(*params, "sunColor", 0.0f, 10.0f, environment.sunColor);
+            ReadOptionalNumber(*params, "sunIntensity", 0.0f, 10.0f, environment.sunIntensity);
+
+            m_project.lookDevEnvironment = environment;
+            MarkLookDevCustom();
+            ApplyLookDevSettings();
+            MarkProjectDirty();
+            ++m_controlStateVersion;
+            m_controlLastError.clear();
+            return ControlSuccessResponse(id, m_controlStateVersion, "{\"updated\":true}");
+        }
+        if (method == "set_shadow_settings")
+        {
+            LookDevShadowSettings shadowSettings = m_project.lookDevShadowSettings;
+            ReadOptionalBool(*params, "enabled", shadowSettings.enabled);
+            if (const JsonValue* resolution = FindMember(*params, "resolution"))
+            {
+                if (resolution->type != JsonValue::Type::Number)
+                {
+                    throw std::runtime_error("resolution must be a number.");
+                }
+                const std::uint32_t requestedResolution = static_cast<std::uint32_t>(resolution->number);
+                if (requestedResolution != 1024u && requestedResolution != 2048u && requestedResolution != 4096u)
+                {
+                    throw std::runtime_error("resolution must be 1024, 2048, or 4096.");
+                }
+                shadowSettings.resolution = requestedResolution;
+            }
+            ReadOptionalNumber(*params, "strength", 0.0f, 1.0f, shadowSettings.strength);
+            ReadOptionalNumber(*params, "bias", 0.0f, 0.05f, shadowSettings.bias);
+            ReadOptionalNumber(*params, "softness", 0.0f, 8.0f, shadowSettings.softness);
+            ReadOptionalNumber(*params, "fitScale", 1.0f, 4.0f, shadowSettings.fitScale);
+
+            m_project.lookDevShadowSettings = shadowSettings;
+            MarkLookDevCustom();
+            ApplyLookDevSettings();
+            MarkProjectDirty();
+            ++m_controlStateVersion;
+            m_controlLastError.clear();
+            return ControlSuccessResponse(id, m_controlStateVersion, "{\"updated\":true}");
+        }
+        if (method == "set_camera")
+        {
+            ViewportCamera camera = m_backend.CameraState();
+            ReadOptionalFloat3(*params, "target", -1000000.0f, 1000000.0f, camera.target);
+            ReadOptionalNumber(*params, "yaw", -1000.0f, 1000.0f, camera.yaw);
+            ReadOptionalNumber(*params, "pitch", -1.55f, 1.55f, camera.pitch);
+            ReadOptionalNumber(*params, "distance", 0.001f, 10000000.0f, camera.distance);
+
+            m_backend.SetCameraState(camera);
+            m_project.viewportCamera = camera;
+            m_project.hasViewportCamera = true;
+            MarkProjectDirty();
+            ++m_controlStateVersion;
+            m_controlLastError.clear();
+            return ControlSuccessResponse(id, m_controlStateVersion, "{\"updated\":true}");
+        }
+        if (method == "set_material_preview")
+        {
+            const std::string materialName = JsonStringOr(*params, "materialName");
+            if (materialName.empty())
+            {
+                throw std::runtime_error("materialName is required.");
+            }
+            auto material = std::find_if(
+                m_project.materialAssignments.begin(),
+                m_project.materialAssignments.end(),
+                [&](const MaterialAssignment& assignment) { return assignment.materialName == materialName; });
+            if (material == m_project.materialAssignments.end())
+            {
+                throw std::runtime_error("materialName was not found.");
+            }
+
+            MaterialAssignment updated = *material;
+            ReadOptionalFloat4(*params, "baseColorFactor", 0.0f, 16.0f, updated.baseColorFactor);
+            ReadOptionalFloat4(*params, "emissiveFactor", 0.0f, 1000.0f, updated.emissiveFactor);
+            ReadOptionalNumber(*params, "roughnessFactor", 0.0f, 1.0f, updated.roughnessFactor);
+            ReadOptionalNumber(*params, "metallicFactor", 0.0f, 1.0f, updated.metallicFactor);
+            ReadOptionalNumber(*params, "occlusionStrength", 0.0f, 1.0f, updated.occlusionStrength);
+            ReadOptionalNumber(*params, "normalStrength", 0.0f, 2.0f, updated.normalStrength);
+            ReadOptionalNumber(*params, "alphaCutoff", 0.0f, 1.0f, updated.alphaCutoff);
+            ReadOptionalBool(*params, "flipNormalGreen", updated.flipNormalGreen);
+            ReadOptionalBool(*params, "packedOcclusionRoughnessMetallic", updated.packedOcclusionRoughnessMetallic);
+            if (const JsonValue* alphaMode = FindMember(*params, "alphaMode"))
+            {
+                if (alphaMode->type != JsonValue::Type::String)
+                {
+                    throw std::runtime_error("alphaMode must be a string.");
+                }
+                updated.alphaMode = AlphaModeFromJson(alphaMode->string, updated.alphaMode);
+                if (AlphaModeJsonName(updated.alphaMode) != alphaMode->string && !(alphaMode->string == "Opaque" || alphaMode->string == "Mask" || alphaMode->string == "Blend"))
+                {
+                    throw std::runtime_error("alphaMode must be Opaque, Mask, or Blend.");
+                }
+            }
+
+            *material = updated;
+            m_backend.SetMaterialAssignments(m_project.materialAssignments);
+            MarkProjectDirty();
+            ++m_controlStateVersion;
+            m_controlLastError.clear();
+            return ControlSuccessResponse(id, m_controlStateVersion, "{\"updated\":true}");
+        }
+
+        throw std::runtime_error("Unsupported local control method: " + method);
+    }
+    catch (const std::exception& ex)
+    {
+        m_controlLastCommand = method;
+        m_controlLastError = ex.what();
+        return ControlErrorResponse(id, "InvalidArgument", ex.what());
+    }
+}
+
 void RenderBuilderApp::SaveProject()
 {
     if (m_project.path.empty())
@@ -3211,6 +3860,13 @@ bool RenderBuilderApp::SaveProjectToDisk(const std::filesystem::path& requestedP
              << "\"displayMode\": \"" << EscapeJson(DisplayModeJsonName(m_project.lookDevViewSettings.displayMode)) << "\", "
              << "\"turntableEnabled\": " << (m_project.lookDevViewSettings.turntableEnabled ? "true" : "false") << ", "
              << "\"turntableSpeed\": " << m_project.lookDevViewSettings.turntableSpeed << " },\n";
+        json << "  \"lookDevShadowSettings\": { "
+             << "\"enabled\": " << (m_project.lookDevShadowSettings.enabled ? "true" : "false") << ", "
+             << "\"resolution\": " << m_project.lookDevShadowSettings.resolution << ", "
+             << "\"strength\": " << m_project.lookDevShadowSettings.strength << ", "
+             << "\"bias\": " << m_project.lookDevShadowSettings.bias << ", "
+             << "\"softness\": " << m_project.lookDevShadowSettings.softness << ", "
+             << "\"fitScale\": " << m_project.lookDevShadowSettings.fitScale << " },\n";
         json << "  \"activeLookDevPreset\": \"" << EscapeJson(m_project.activeLookDevPresetName) << "\",\n";
         json << "  \"lookDevPresets\": [\n";
         for (std::size_t i = 0; i < m_project.lookDevPresets.size(); ++i)
@@ -3249,7 +3905,14 @@ bool RenderBuilderApp::SaveProjectToDisk(const std::filesystem::path& requestedP
                  << "\"gamma\": " << preset.viewSettings.gamma << ", "
                  << "\"displayMode\": \"" << EscapeJson(DisplayModeJsonName(preset.viewSettings.displayMode)) << "\", "
                  << "\"turntableEnabled\": " << (preset.viewSettings.turntableEnabled ? "true" : "false") << ", "
-                 << "\"turntableSpeed\": " << preset.viewSettings.turntableSpeed << " } }";
+                 << "\"turntableSpeed\": " << preset.viewSettings.turntableSpeed << " }, "
+                 << "\"shadowSettings\": { "
+                 << "\"enabled\": " << (preset.shadowSettings.enabled ? "true" : "false") << ", "
+                 << "\"resolution\": " << preset.shadowSettings.resolution << ", "
+                 << "\"strength\": " << preset.shadowSettings.strength << ", "
+                 << "\"bias\": " << preset.shadowSettings.bias << ", "
+                 << "\"softness\": " << preset.shadowSettings.softness << ", "
+                 << "\"fitScale\": " << preset.shadowSettings.fitScale << " } }";
             json << (i + 1 < m_project.lookDevPresets.size() ? "," : "") << "\n";
         }
         json << "  ],\n";
@@ -3450,6 +4113,11 @@ void RenderBuilderApp::LoadProjectFromDisk(const std::filesystem::path& path)
         {
             loadedProject.lookDevViewSettings = JsonLookDevViewSettingsOr(*lookDevViewSettings, loadedProject.lookDevViewSettings);
         }
+        const JsonValue* lookDevShadowSettings = FindMember(root, "lookDevShadowSettings");
+        if (lookDevShadowSettings && lookDevShadowSettings->type == JsonValue::Type::Object)
+        {
+            loadedProject.lookDevShadowSettings = JsonLookDevShadowSettingsOr(*lookDevShadowSettings, loadedProject.lookDevShadowSettings);
+        }
         loadedProject.activeLookDevPresetName = JsonStringOr(root, "activeLookDevPreset", loadedProject.activeLookDevPresetName);
         const JsonValue* lookDevPresets = FindMember(root, "lookDevPresets");
         if (lookDevPresets && lookDevPresets->type == JsonValue::Type::Array)
@@ -3476,6 +4144,11 @@ void RenderBuilderApp::LoadProjectFromDisk(const std::filesystem::path& path)
                 if (presetViewSettings && presetViewSettings->type == JsonValue::Type::Object)
                 {
                     preset.viewSettings = JsonLookDevViewSettingsOr(*presetViewSettings, preset.viewSettings);
+                }
+                const JsonValue* presetShadowSettings = FindMember(presetValue, "shadowSettings");
+                if (presetShadowSettings && presetShadowSettings->type == JsonValue::Type::Object)
+                {
+                    preset.shadowSettings = JsonLookDevShadowSettingsOr(*presetShadowSettings, preset.shadowSettings);
                 }
                 loadedProject.lookDevPresets.push_back(preset);
             }

@@ -18,6 +18,8 @@ RenderBuilder は、ランタイム HLSL 開発のための Windows / Visual Stu
 
 - [シーンファイルと基本操作](Docs/SceneAndControls.ja.md)
 - [シーン例とスクリーンショット](Docs/SceneExamples.ja.md)
+- [独自シェーダの作り方](Docs/CustomShaders.ja.md)
+- [RenderBuilder MCP Bridge](Tools/RenderBuilderMcp/README.md)
 
 ## 現在の MVP
 
@@ -33,6 +35,7 @@ RenderBuilder は、ランタイム HLSL 開発のための Windows / Visual Stu
 - imported material を material ごとの draw routing と shader set assignment で描画。
 - HDRI/SkyColor background、sun light、tone mapping、display mode、turntable、snapshot、Project JSON 復元を含む LookDev PBR preview。
 - Bistro 系の packed ORM に対応。`Specular` DDS を `R=AO`、`G=Roughness`、`B=Metallic` として評価できます。
+- `\\.\pipe\RenderBuilder.Control` 経由で LookDev / material 設定を操作する local MCP control bridge。
 
 ## LookDev ロードマップ
 
@@ -63,3 +66,20 @@ Visual Studio 2022 で `RenderBuilder.sln` を開き、`x64` の Debug または
 ```
 
 `GrapicsSample` は意図的に git 管理対象外にしており、参照資料としてのみ保持します。
+
+## Local MCP Control
+
+RenderBuilder を local control 有効で起動します。
+
+```powershell
+Bin\x64\Debug\RenderBuilder.exe --enable-local-control
+```
+
+stdio MCP bridge は次のように build / run します。
+
+```powershell
+cd Tools\RenderBuilderMcp
+npm install
+npm run build
+node dist\index.js
+```

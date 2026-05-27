@@ -8,6 +8,7 @@ cbuffer RenderBuilderScene : register(b0)
     float4x4 gViewProjectionInverse;
     float4 gCameraPositionTime;
     float4 gLightDirectionIntensity;
+    float4x4 gShadowViewProjection;
 };
 
 cbuffer RenderBuilderMaterial : register(b1)
@@ -33,6 +34,7 @@ cbuffer RenderBuilderLookDev : register(b2)
     float4 gIblOptions;
     float4 gSkyTopColor;
     float4 gSkyHorizonColor;
+    float4 gShadowOptions;
 };
 
 static const uint RB_TEXTURE_BASE_COLOR = 1u << 0;
@@ -58,6 +60,7 @@ static const uint RB_DISPLAY_METALLIC = 4u;
 static const uint RB_DISPLAY_AO = 5u;
 static const uint RB_DISPLAY_EMISSIVE = 6u;
 static const uint RB_DISPLAY_LIGHTING_ONLY = 7u;
+static const uint RB_DISPLAY_SHADOW_MASK = 8u;
 
 Texture2D gBaseColorTexture : register(t0);
 Texture2D gNormalTexture : register(t1);
@@ -66,7 +69,9 @@ Texture2D gMetallicTexture : register(t3);
 Texture2D gOcclusionTexture : register(t4);
 Texture2D gEmissiveTexture : register(t5);
 Texture2D gEnvironmentTexture : register(t6);
+Texture2D<float> gShadowTexture : register(t7);
 SamplerState gLinearWrapSampler : register(s0);
+SamplerComparisonState gShadowComparisonSampler : register(s1);
 
 struct RBVertexInput
 {

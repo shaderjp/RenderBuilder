@@ -91,6 +91,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Source\D3D12Backend.cpp" />
+    <ClCompile Include="Source\LocalControlService.cpp" />
     <ClCompile Include="Source\Main.cpp" />
     <ClCompile Include="Source\RenderBuilderApp.cpp" />
     <ClCompile Include="Source\SceneImporter.cpp" />
@@ -107,6 +108,7 @@
   <ItemGroup>
     <ClInclude Include="Source\D3D12Backend.h" />
     <ClInclude Include="Source\EditorTypes.h" />
+    <ClInclude Include="Source\LocalControlService.h" />
     <ClInclude Include="Source\RenderBuilderApp.h" />
     <ClInclude Include="Source\SceneImporter.h" />
     <ClInclude Include="Source\SceneTypes.h" />

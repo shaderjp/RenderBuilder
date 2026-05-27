@@ -62,7 +62,8 @@ enum class LookDevDisplayMode : std::uint32_t
     Metallic,
     AmbientOcclusion,
     Emissive,
-    LightingOnly
+    LightingOnly,
+    ShadowMask
 };
 
 struct ShaderCompileRequest
@@ -142,6 +143,16 @@ struct LookDevViewSettings
     float turntableSpeed = 0.35f;
 };
 
+struct LookDevShadowSettings
+{
+    bool enabled = true;
+    std::uint32_t resolution = 2048;
+    float strength = 0.85f;
+    float bias = 0.0015f;
+    float softness = 1.5f;
+    float fitScale = 1.25f;
+};
+
 struct LookDevPreset
 {
     std::string name = "Default Studio";
@@ -149,6 +160,7 @@ struct LookDevPreset
     std::array<float, 4> skyHorizonColor = { 0.035f, 0.045f, 0.055f, 1.0f };
     LookDevEnvironment environment;
     LookDevViewSettings viewSettings;
+    LookDevShadowSettings shadowSettings;
     bool preserveEnvironmentPath = false;
 };
 
@@ -162,6 +174,7 @@ struct ProjectFile
     bool hasViewportCamera = false;
     LookDevEnvironment lookDevEnvironment;
     LookDevViewSettings lookDevViewSettings;
+    LookDevShadowSettings lookDevShadowSettings;
     std::string activeLookDevPresetName = "Default Studio";
     std::vector<LookDevPreset> lookDevPresets;
     std::vector<ShaderSet> shaderSets;

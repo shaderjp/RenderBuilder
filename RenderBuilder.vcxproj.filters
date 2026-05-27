@@ -16,6 +16,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Source\D3D12Backend.cpp"><Filter>Source</Filter></ClCompile>
+    <ClCompile Include="Source\LocalControlService.cpp"><Filter>Source</Filter></ClCompile>
     <ClCompile Include="Source\Main.cpp"><Filter>Source</Filter></ClCompile>
     <ClCompile Include="Source\RenderBuilderApp.cpp"><Filter>Source</Filter></ClCompile>
     <ClCompile Include="Source\SceneImporter.cpp"><Filter>Source</Filter></ClCompile>
@@ -30,6 +31,7 @@
   <ItemGroup>
     <ClInclude Include="Source\D3D12Backend.h"><Filter>Source</Filter></ClInclude>
     <ClInclude Include="Source\EditorTypes.h"><Filter>Source</Filter></ClInclude>
+    <ClInclude Include="Source\LocalControlService.h"><Filter>Source</Filter></ClInclude>
     <ClInclude Include="Source\RenderBuilderApp.h"><Filter>Source</Filter></ClInclude>
     <ClInclude Include="Source\SceneImporter.h"><Filter>Source</Filter></ClInclude>
     <ClInclude Include="Source\SceneTypes.h"><Filter>Source</Filter></ClInclude>
