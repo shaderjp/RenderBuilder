@@ -905,6 +905,156 @@ std::string Float4Json(const DirectX::XMFLOAT4& value)
     return json.str();
 }
 
+std::string JsonValueToJson(const JsonValue& value)
+{
+    std::ostringstream json;
+    switch (value.type)
+    {
+    case JsonValue::Type::Null:
+        json << "null";
+        break;
+    case JsonValue::Type::Bool:
+        json << BoolJson(value.boolean);
+        break;
+    case JsonValue::Type::Number:
+        json << value.number;
+        break;
+    case JsonValue::Type::String:
+        json << "\"" << EscapeJson(value.string) << "\"";
+        break;
+    case JsonValue::Type::Array:
+        json << "[";
+        for (std::size_t i = 0; i < value.array.size(); ++i)
+        {
+            json << JsonValueToJson(value.array[i]);
+            if (i + 1 < value.array.size())
+            {
+                json << ",";
+            }
+        }
+        json << "]";
+        break;
+    case JsonValue::Type::Object:
+    {
+        json << "{";
+        std::size_t index = 0;
+        for (const auto& [key, member] : value.object)
+        {
+            json << "\"" << EscapeJson(key) << "\":" << JsonValueToJson(member);
+            if (++index < value.object.size())
+            {
+                json << ",";
+            }
+        }
+        json << "}";
+        break;
+    }
+    }
+    return json.str();
+}
+
+std::string ExtractFirstJsonObject(const std::string& text)
+{
+    for (std::size_t start = 0; start < text.size(); ++start)
+    {
+        if (text[start] != '{')
+        {
+            continue;
+        }
+
+        int depth = 0;
+        bool inString = false;
+        bool escaped = false;
+        for (std::size_t i = start; i < text.size(); ++i)
+        {
+            const char ch = text[i];
+            if (inString)
+            {
+                if (escaped)
+                {
+                    escaped = false;
+                }
+                else if (ch == '\\')
+                {
+                    escaped = true;
+                }
+                else if (ch == '"')
+                {
+                    inString = false;
+                }
+                continue;
+            }
+
+            if (ch == '"')
+            {
+                inString = true;
+            }
+            else if (ch == '{')
+            {
+                ++depth;
+            }
+            else if (ch == '}')
+            {
+                --depth;
+                if (depth == 0)
+                {
+                    return text.substr(start, i - start + 1);
+                }
+            }
+        }
+    }
+    return {};
+}
+
+bool IsAiControlMethodAllowed(const std::string& method)
+{
+    static const char* const AllowedMethods[] =
+    {
+        "set_view_settings",
+        "set_environment_settings",
+        "set_sun_settings",
+        "set_shadow_settings",
+        "set_camera",
+        "set_material_preview",
+    };
+    for (const char* allowedMethod : AllowedMethods)
+    {
+        if (method == allowedMethod)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void CopyStringToBuffer(char* buffer, std::size_t bufferSize, const std::string& text)
+{
+    if (bufferSize == 0)
+    {
+        return;
+    }
+    const std::size_t copySize = std::min(bufferSize - 1, text.size());
+    std::memcpy(buffer, text.data(), copySize);
+    buffer[copySize] = '\0';
+}
+
+std::string ShortActionLabel(const std::string& method, const std::string& paramsJson)
+{
+    std::string label = method + " " + paramsJson;
+    constexpr std::size_t MaxLabelLength = 160;
+    if (label.size() > MaxLabelLength)
+    {
+        label.resize(MaxLabelLength - 3);
+        label += "...";
+    }
+    return label;
+}
+
+bool IsBlankString(const std::string& text)
+{
+    return std::all_of(text.begin(), text.end(), [](unsigned char ch) { return std::isspace(ch) != 0; });
+}
+
 std::string ControlErrorResponse(const std::string& id, const std::string& code, const std::string& message)
 {
     std::ostringstream json;
@@ -1114,6 +1264,7 @@ int RenderBuilderApp::Run(HINSTANCE instance, int showCommand)
             }
         }
         m_localControlService.Stop();
+        m_aiChatService.Stop();
         m_backend.Shutdown();
         if (m_comInitialized)
         {
@@ -1125,6 +1276,7 @@ int RenderBuilderApp::Run(HINSTANCE instance, int showCommand)
     catch (const std::exception& ex)
     {
         m_localControlService.Stop();
+        m_aiChatService.Stop();
         m_backend.Shutdown();
         if (m_comInitialized)
         {
@@ -1151,6 +1303,7 @@ void RenderBuilderApp::Initialize(HINSTANCE instance, int showCommand)
     m_rootDirectory = FindRootDirectory();
     LoadRecentProjects();
     m_shaderTextBuffer.resize(ShaderBufferSize);
+    InitializeAiChatDefaults();
 
     WNDCLASSEXW windowClass = {};
     windowClass.cbSize = sizeof(windowClass);
@@ -1925,6 +2078,7 @@ void RenderBuilderApp::Tick()
     }
 
     ProcessLocalControlRequests();
+    PollAiChatEvents();
 
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplWin32_NewFrame();
@@ -2024,6 +2178,7 @@ void RenderBuilderApp::DrawUi()
     DrawMaterialInspectorPanel();
     DrawAssetBrowserPanel();
     DrawAutomationPanel();
+    DrawAiChatPanel();
     DrawDiagnosticsPanel();
     DrawStatsPanel();
 }
@@ -3109,6 +3264,399 @@ void RenderBuilderApp::DrawAutomationPanel()
     }
     ImGui::TextDisabled("Launch with --enable-local-control to enable this automatically.");
     ImGui::End();
+}
+
+void RenderBuilderApp::DrawAiChatPanel()
+{
+    ImGui::Begin("AI Chat");
+
+    const AiChatRuntimeStatus status = m_aiChatService.Status();
+    ImGui::Text("Status: %s", m_aiStatus.c_str());
+    if (!status.lastError.empty())
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "Error: %s", status.lastError.c_str());
+    }
+    if (status.serverStartedByApp)
+    {
+        ImGui::Text("llama-server PID: %lu", static_cast<unsigned long>(status.processId));
+    }
+
+    if (ImGui::CollapsingHeader("Model Runtime", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        ImGui::InputText("llama-server", m_aiServerPathBuffer, sizeof(m_aiServerPathBuffer));
+        ImGui::InputText("GGUF Model", m_aiModelPathBuffer, sizeof(m_aiModelPathBuffer));
+        ImGui::InputInt("Port", &m_aiServerPort);
+        ImGui::InputInt("Context Tokens", &m_aiContextTokens);
+        ImGui::InputInt("Max Reply Tokens", &m_aiMaxTokens);
+        ImGui::InputInt("GPU Layers", &m_aiGpuLayers);
+        ImGui::InputInt("Threads", &m_aiThreads);
+        ImGui::SliderFloat("Temperature", &m_aiTemperature, 0.0f, 2.0f);
+        ImGui::SliderFloat("Top P", &m_aiTopP, 0.05f, 1.0f);
+        ImGui::InputInt("Top K", &m_aiTopK);
+        ImGui::Checkbox("Use Jinja Chat Template", &m_aiUseJinja);
+
+        if (ImGui::Button("Load Model"))
+        {
+            AiChatConfig config;
+            config.serverExecutable = std::filesystem::path(m_aiServerPathBuffer);
+            config.modelPath = std::filesystem::path(m_aiModelPathBuffer);
+            config.port = static_cast<std::uint16_t>(std::clamp(m_aiServerPort, 1, 65535));
+            config.contextTokens = std::max(1024, m_aiContextTokens);
+            config.maxTokens = std::max(64, m_aiMaxTokens);
+            config.gpuLayers = std::max(0, m_aiGpuLayers);
+            config.threads = std::max(0, m_aiThreads);
+            config.temperature = std::clamp(m_aiTemperature, 0.0f, 2.0f);
+            config.topP = std::clamp(m_aiTopP, 0.05f, 1.0f);
+            config.topK = std::max(1, m_aiTopK);
+            config.useJinja = m_aiUseJinja;
+            if (m_aiChatService.Start(config))
+            {
+                m_aiStatus = "llama-server started. Send a prompt when the model finishes loading.";
+            }
+            else
+            {
+                m_aiStatus = m_aiChatService.Status().lastError;
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Stop Model"))
+        {
+            m_aiChatService.Stop();
+            m_aiStatus = "AI model stopped.";
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::BeginChild("AIChatTranscript", ImVec2(0.0f, 240.0f), true, ImGuiWindowFlags_HorizontalScrollbar);
+    for (const AiChatTranscriptEntry& entry : m_aiTranscript)
+    {
+        ImVec4 color = ImVec4(0.82f, 0.86f, 0.92f, 1.0f);
+        if (entry.role == "user")
+        {
+            color = ImVec4(0.55f, 0.78f, 1.0f, 1.0f);
+        }
+        else if (entry.role == "assistant")
+        {
+            color = ImVec4(0.58f, 0.92f, 0.70f, 1.0f);
+        }
+        else if (entry.role == "system")
+        {
+            color = ImVec4(1.0f, 0.78f, 0.42f, 1.0f);
+        }
+        ImGui::TextColored(color, "%s", entry.role.c_str());
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", entry.text.c_str());
+        ImGui::Spacing();
+    }
+    if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4.0f)
+    {
+        ImGui::SetScrollHereY(1.0f);
+    }
+    ImGui::EndChild();
+
+    ImGui::InputTextMultiline("##AIChatPrompt", m_aiPromptBuffer, sizeof(m_aiPromptBuffer), ImVec2(-FLT_MIN, 84.0f));
+    const bool busy = status.busy;
+    if (busy)
+    {
+        ImGui::BeginDisabled();
+    }
+    if (ImGui::Button("Send"))
+    {
+        SubmitAiChatPrompt();
+    }
+    if (busy)
+    {
+        ImGui::EndDisabled();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear"))
+    {
+        m_aiTranscript.clear();
+        m_aiPendingActions.clear();
+        m_aiStatus = "AI chat history cleared.";
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Auto Apply", &m_aiAutoApply);
+
+    if (!m_aiPendingActions.empty())
+    {
+        ImGui::Separator();
+        ImGui::Text("Suggested Actions");
+        ImGui::BeginChild("AIPendingActions", ImVec2(0.0f, 120.0f), true);
+        for (std::size_t i = 0; i < m_aiPendingActions.size(); ++i)
+        {
+            ImGui::TextWrapped("%u. %s", static_cast<unsigned>(i + 1), m_aiPendingActions[i].label.c_str());
+        }
+        ImGui::EndChild();
+        if (ImGui::Button("Apply Suggested Changes"))
+        {
+            ApplyPendingAiActions();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Discard Suggestions"))
+        {
+            m_aiPendingActions.clear();
+            m_aiStatus = "AI suggestions discarded.";
+        }
+    }
+
+    ImGui::End();
+}
+
+void RenderBuilderApp::InitializeAiChatDefaults()
+{
+    const std::filesystem::path defaultModelPath =
+        m_rootDirectory / "Assets" / "Models" / "gemma-4-E4B-it" / "gemma-4-E4B-it-Q4_K_M.gguf";
+    const std::vector<std::filesystem::path> serverCandidates =
+    {
+        m_rootDirectory / "ThirdParty" / "llama.cpp" / "Build" / "x64" / "Release" / "bin" / "Release" / "llama-server.exe",
+        m_rootDirectory / "ThirdParty" / "llama.cpp" / "Build" / "x64" / "Debug" / "bin" / "Debug" / "llama-server.exe",
+        m_rootDirectory / "ThirdParty" / "llama.cpp" / "build" / "bin" / "Release" / "llama-server.exe",
+        m_rootDirectory / "ThirdParty" / "llama.cpp" / "build" / "bin" / "Debug" / "llama-server.exe",
+        m_rootDirectory / "ThirdParty" / "llama.cpp" / "build" / "bin" / "llama-server.exe",
+    };
+
+    std::filesystem::path serverPath = serverCandidates.front();
+    for (const std::filesystem::path& candidate : serverCandidates)
+    {
+        if (std::filesystem::exists(candidate))
+        {
+            serverPath = candidate;
+            break;
+        }
+    }
+    CopyStringToBuffer(m_aiModelPathBuffer, sizeof(m_aiModelPathBuffer), defaultModelPath.string());
+    CopyStringToBuffer(m_aiServerPathBuffer, sizeof(m_aiServerPathBuffer), serverPath.string());
+}
+
+void RenderBuilderApp::PollAiChatEvents()
+{
+    for (const AiChatEvent& event : m_aiChatService.DrainEvents())
+    {
+        switch (event.kind)
+        {
+        case AiChatEvent::Kind::Status:
+            m_aiStatus = event.text;
+            break;
+        case AiChatEvent::Kind::Response:
+            ProcessAiAssistantResponse(event.text);
+            m_aiStatus = "AI response received.";
+            break;
+        case AiChatEvent::Kind::Error:
+            m_aiStatus = event.text;
+            m_aiTranscript.push_back({ "system", event.text });
+            break;
+        }
+    }
+    if (m_aiTranscript.size() > 200)
+    {
+        m_aiTranscript.erase(m_aiTranscript.begin(), m_aiTranscript.begin() + static_cast<std::ptrdiff_t>(m_aiTranscript.size() - 200));
+    }
+}
+
+void RenderBuilderApp::SubmitAiChatPrompt()
+{
+    const std::string prompt = m_aiPromptBuffer;
+    if (IsBlankString(prompt))
+    {
+        m_aiStatus = "Enter a prompt before sending.";
+        return;
+    }
+
+    std::vector<AiChatMessage> messages;
+    messages.push_back({ "system", BuildAiSystemPrompt() });
+
+    std::size_t historyBegin = 0;
+    if (m_aiTranscript.size() > 8)
+    {
+        historyBegin = m_aiTranscript.size() - 8;
+    }
+    for (std::size_t i = historyBegin; i < m_aiTranscript.size(); ++i)
+    {
+        const AiChatTranscriptEntry& entry = m_aiTranscript[i];
+        if (entry.role == "user" || entry.role == "assistant")
+        {
+            messages.push_back({ entry.role, entry.text });
+        }
+    }
+
+    messages.push_back({ "user", BuildAiUserPrompt(prompt) });
+    m_aiTranscript.push_back({ "user", prompt });
+    m_aiPendingActions.clear();
+    std::fill(m_aiPromptBuffer, m_aiPromptBuffer + sizeof(m_aiPromptBuffer), '\0');
+
+    if (!m_aiChatService.Submit(messages))
+    {
+        m_aiStatus = m_aiChatService.Status().lastError;
+    }
+    else
+    {
+        m_aiStatus = "AI request queued.";
+    }
+}
+
+void RenderBuilderApp::ProcessAiAssistantResponse(const std::string& assistantText)
+{
+    std::string displayText = assistantText;
+    const std::string jsonText = ExtractFirstJsonObject(assistantText);
+    m_aiPendingActions.clear();
+
+    if (!jsonText.empty())
+    {
+        try
+        {
+            const JsonValue root = JsonParser(jsonText).Parse();
+            if (root.type == JsonValue::Type::Object)
+            {
+                displayText = JsonStringOr(root, "reply", assistantText);
+                if (const JsonValue* actions = FindMember(root, "actions"))
+                {
+                    if (actions->type == JsonValue::Type::Array)
+                    {
+                        for (const JsonValue& action : actions->array)
+                        {
+                            if (action.type != JsonValue::Type::Object)
+                            {
+                                continue;
+                            }
+                            const std::string method = JsonStringOr(action, "method");
+                            if (!IsAiControlMethodAllowed(method))
+                            {
+                                if (!method.empty())
+                                {
+                                    m_aiTranscript.push_back({ "system", "Ignored unsupported AI action: " + method });
+                                }
+                                continue;
+                            }
+
+                            std::string paramsJson = "{}";
+                            if (const JsonValue* params = FindMember(action, "params"))
+                            {
+                                if (params->type != JsonValue::Type::Object)
+                                {
+                                    m_aiTranscript.push_back({ "system", "Ignored AI action with non-object params: " + method });
+                                    continue;
+                                }
+                                paramsJson = JsonValueToJson(*params);
+                            }
+
+                            m_aiPendingActions.push_back({ method, paramsJson, ShortActionLabel(method, paramsJson) });
+                        }
+                    }
+                }
+            }
+        }
+        catch (const std::exception& ex)
+        {
+            m_aiTranscript.push_back({ "system", std::string("Could not parse AI action JSON: ") + ex.what() });
+        }
+    }
+
+    m_aiTranscript.push_back({ "assistant", displayText });
+    if (m_aiAutoApply && !m_aiPendingActions.empty())
+    {
+        ApplyPendingAiActions();
+    }
+}
+
+void RenderBuilderApp::ApplyPendingAiActions()
+{
+    if (m_aiPendingActions.empty())
+    {
+        return;
+    }
+
+    std::size_t appliedCount = 0;
+    for (const AiPendingControlAction& action : m_aiPendingActions)
+    {
+        std::ostringstream request;
+        request << "{\"id\":\"ai-" << m_aiRequestSerial++ << "\",\"method\":\""
+                << EscapeJson(action.method) << "\",\"params\":" << action.paramsJson << "}";
+        const std::string response = HandleLocalControlRequest(request.str());
+        try
+        {
+            const JsonValue root = JsonParser(response).Parse();
+            const bool ok = JsonBoolOr(root, "ok", false);
+            if (ok)
+            {
+                ++appliedCount;
+            }
+            else
+            {
+                std::string message = "AI action failed: " + action.method;
+                if (const JsonValue* error = FindMember(root, "error"))
+                {
+                    if (error->type == JsonValue::Type::Object)
+                    {
+                        const std::string detail = JsonStringOr(*error, "message");
+                        if (!detail.empty())
+                        {
+                            message += " - " + detail;
+                        }
+                    }
+                }
+                m_aiTranscript.push_back({ "system", message });
+            }
+        }
+        catch (const std::exception& ex)
+        {
+            m_aiTranscript.push_back({ "system", std::string("AI action returned invalid response: ") + ex.what() });
+        }
+    }
+
+    std::ostringstream status;
+    status << "Applied " << appliedCount << " AI action" << (appliedCount == 1 ? "." : "s.");
+    m_aiStatus = status.str();
+    m_aiTranscript.push_back({ "system", m_aiStatus });
+    m_aiPendingActions.clear();
+}
+
+std::string RenderBuilderApp::BuildAiSystemPrompt() const
+{
+    std::ostringstream prompt;
+    prompt
+        << "You are the local AI assistant inside RenderBuilder, a D3D12 shader and look-dev editor.\n"
+        << "Always answer with one strict JSON object and no Markdown.\n"
+        << "The JSON schema is: {\"reply\":\"short user-facing reply\",\"actions\":[{\"method\":\"name\",\"params\":{}}]}.\n"
+        << "Use an empty actions array when no GUI change is needed.\n"
+        << "Only these action methods are allowed: set_view_settings, set_environment_settings, set_sun_settings, set_shadow_settings, set_camera, set_material_preview.\n"
+        << "Do not invent method names. Keep numeric values within the ranges implied by the current state and action names.\n"
+        << "For material edits, only use materialName values present in the provided material summary.\n";
+    return prompt.str();
+}
+
+std::string RenderBuilderApp::BuildAiUserPrompt(const std::string& prompt) const
+{
+    std::ostringstream text;
+    text << "Current RenderBuilder state JSON:\n"
+         << BuildControlStateJson() << "\n\n"
+         << "Material summary JSON:\n"
+         << BuildAiMaterialSummaryJson() << "\n\n"
+         << "User request:\n"
+         << prompt;
+    return text.str();
+}
+
+std::string RenderBuilderApp::BuildAiMaterialSummaryJson() const
+{
+    constexpr std::size_t MaxMaterialsForPrompt = 32;
+    std::ostringstream json;
+    json << "{\"materialCount\":" << m_project.materialAssignments.size() << ",\"materials\":[";
+    const std::size_t count = std::min(MaxMaterialsForPrompt, m_project.materialAssignments.size());
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const MaterialAssignment& material = m_project.materialAssignments[i];
+        json << "{\"name\":\"" << EscapeJson(material.materialName)
+             << "\",\"roughnessFactor\":" << material.roughnessFactor
+             << ",\"metallicFactor\":" << material.metallicFactor
+             << ",\"baseColorFactor\":" << Float4Json(material.baseColorFactor) << "}";
+        if (i + 1 < count)
+        {
+            json << ",";
+        }
+    }
+    json << "],\"truncated\":" << BoolJson(m_project.materialAssignments.size() > count) << "}";
+    return json.str();
 }
 
 void RenderBuilderApp::DrawStatsPanel()

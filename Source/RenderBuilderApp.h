@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AiChatService.h"
 #include "D3D12Backend.h"
 #include "EditorTypes.h"
 #include "LocalControlService.h"
@@ -43,6 +44,19 @@ struct ShaderSetRuntimeStatus
     std::string lastDiagnostics;
 };
 
+struct AiChatTranscriptEntry
+{
+    std::string role;
+    std::string text;
+};
+
+struct AiPendingControlAction
+{
+    std::string method;
+    std::string paramsJson;
+    std::string label;
+};
+
 class RenderBuilderApp
 {
 public:
@@ -69,11 +83,20 @@ private:
     void DrawShaderSetManagement();
     void DrawMaterialShaderAssignmentOverview();
     void DrawAutomationPanel();
+    void DrawAiChatPanel();
     void DrawDiagnosticsPanel();
     void DrawStatsPanel();
     void ProcessLocalControlRequests();
+    void PollAiChatEvents();
     std::string HandleLocalControlRequest(const std::string& requestText);
     void SetLocalControlEnabled(bool enabled);
+    void InitializeAiChatDefaults();
+    void SubmitAiChatPrompt();
+    void ProcessAiAssistantResponse(const std::string& assistantText);
+    void ApplyPendingAiActions();
+    std::string BuildAiSystemPrompt() const;
+    std::string BuildAiUserPrompt(const std::string& prompt) const;
+    std::string BuildAiMaterialSummaryJson() const;
     void CompileActiveShader();
     void CompileAllShaderSets();
     bool CompileShaderSet(ShaderSet& shaderSet, std::vector<std::uint8_t>* vertexShader, std::vector<std::uint8_t>* pixelShader, std::string& diagnostics);
@@ -151,6 +174,7 @@ private:
     D3D12Backend m_backend;
     SceneImporter m_sceneImporter;
     LocalControlService m_localControlService;
+    AiChatService m_aiChatService;
 
     ProjectFile m_project;
     std::vector<SceneMaterial> m_sceneMaterials;
@@ -183,6 +207,23 @@ private:
     std::uint64_t m_controlStateVersion = 1;
     std::string m_controlLastCommand = "<none>";
     std::string m_controlLastError;
+    char m_aiPromptBuffer[4096] = {};
+    char m_aiModelPathBuffer[1024] = {};
+    char m_aiServerPathBuffer[1024] = {};
+    int m_aiServerPort = 18080;
+    int m_aiContextTokens = 8192;
+    int m_aiMaxTokens = 1024;
+    int m_aiGpuLayers = 0;
+    int m_aiThreads = 0;
+    float m_aiTemperature = 1.0f;
+    float m_aiTopP = 0.95f;
+    int m_aiTopK = 64;
+    bool m_aiUseJinja = true;
+    bool m_aiAutoApply = false;
+    std::uint64_t m_aiRequestSerial = 1;
+    std::string m_aiStatus = "AI model is not loaded.";
+    std::vector<AiChatTranscriptEntry> m_aiTranscript;
+    std::vector<AiPendingControlAction> m_aiPendingActions;
 
     std::chrono::high_resolution_clock::time_point m_lastTick;
 };

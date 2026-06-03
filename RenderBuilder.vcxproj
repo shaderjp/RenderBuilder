@@ -50,6 +50,9 @@
     <AssimpZlibName Condition="'$(Configuration)'!='Debug'">zlibstatic.lib</AssimpZlibName>
     <DirectXTexProject>$(ProjectDir)ThirdParty\DirectXTex\DirectXTex\DirectXTex_Desktop_2022_Win10.vcxproj</DirectXTexProject>
     <DirectXTexLibDir>$(ProjectDir)ThirdParty\DirectXTex\DirectXTex\Bin\Desktop_2022_Win10\x64\$(Configuration)</DirectXTexLibDir>
+    <LlamaCppRoot>$(ProjectDir)ThirdParty\llama.cpp</LlamaCppRoot>
+    <LlamaCppBuildRoot>$(LlamaCppRoot)\Build\$(Platform)\$(Configuration)</LlamaCppBuildRoot>
+    <LlamaServerExe>$(LlamaCppBuildRoot)\bin\$(Configuration)\llama-server.exe</LlamaServerExe>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -63,7 +66,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>$(AssimpLibName);$(AssimpZlibName);DirectXTex.lib;d3d12.lib;d3d11.lib;dxgi.lib;dxguid.lib;d3dcompiler.lib;dxcompiler.lib;comdlg32.lib;windowscodecs.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(AssimpLibName);$(AssimpZlibName);DirectXTex.lib;d3d12.lib;d3d11.lib;dxgi.lib;dxguid.lib;d3dcompiler.lib;dxcompiler.lib;comdlg32.lib;windowscodecs.lib;ole32.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(AssimpBuildRoot)\lib\$(Configuration);$(AssimpBuildRoot)\contrib\zlib\$(Configuration);$(DirectXTexLibDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <DelayLoadDLLs>d3d12.dll;dxcompiler.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
@@ -84,12 +87,13 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalDependencies>$(AssimpLibName);$(AssimpZlibName);DirectXTex.lib;d3d12.lib;d3d11.lib;dxgi.lib;dxguid.lib;d3dcompiler.lib;dxcompiler.lib;comdlg32.lib;windowscodecs.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(AssimpLibName);$(AssimpZlibName);DirectXTex.lib;d3d12.lib;d3d11.lib;dxgi.lib;dxguid.lib;d3dcompiler.lib;dxcompiler.lib;comdlg32.lib;windowscodecs.lib;ole32.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(AssimpBuildRoot)\lib\$(Configuration);$(AssimpBuildRoot)\contrib\zlib\$(Configuration);$(DirectXTexLibDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <DelayLoadDLLs>d3d12.dll;dxcompiler.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Source\AiChatService.cpp" />
     <ClCompile Include="Source\D3D12Backend.cpp" />
     <ClCompile Include="Source\LocalControlService.cpp" />
     <ClCompile Include="Source\Main.cpp" />
@@ -106,6 +110,7 @@
     <ClCompile Include="ThirdParty\imgui\backends\imgui_impl_win32.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Source\AiChatService.h" />
     <ClInclude Include="Source\D3D12Backend.h" />
     <ClInclude Include="Source\EditorTypes.h" />
     <ClInclude Include="Source\LocalControlService.h" />
@@ -134,8 +139,9 @@
     <Error Condition="!Exists('$(ProjectDir)ThirdParty\DirectXTex\DirectXTex\DirectXTex.h')" Text="ThirdParty\DirectXTex is missing. Run git submodule update --init --recursive." />
     <Error Condition="!Exists('$(ProjectDir)ThirdParty\assimp\include\assimp\Importer.hpp')" Text="ThirdParty\assimp is missing. Run git submodule update --init --recursive." />
     <Error Condition="!Exists('$(ProjectDir)ThirdParty\meshoptimizer\src\meshoptimizer.h')" Text="ThirdParty\meshoptimizer is missing. Run git submodule update --init --recursive." />
+    <Error Condition="!Exists('$(ProjectDir)ThirdParty\llama.cpp\CMakeLists.txt')" Text="ThirdParty\llama.cpp is missing. Add it with: git submodule add --depth 1 https://github.com/ggml-org/llama.cpp.git ThirdParty/llama.cpp" />
   </Target>
   <Target Name="BuildThirdParty" BeforeTargets="ClCompile">
-    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)BuildThirdParty.ps1&quot; -AssimpRoot &quot;$(AssimpRoot)&quot; -AssimpBuildRoot &quot;$(AssimpBuildRoot)&quot; -AssimpLibName &quot;$(AssimpLibName)&quot; -DirectXTexProject &quot;$(DirectXTexProject)&quot; -DirectXTexLibDir &quot;$(DirectXTexLibDir)&quot; -MSBuildPath &quot;$(MSBuildToolsPath)\MSBuild.exe&quot; -Configuration &quot;$(Configuration)&quot;" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)BuildThirdParty.ps1&quot; -AssimpRoot &quot;$(AssimpRoot)&quot; -AssimpBuildRoot &quot;$(AssimpBuildRoot)&quot; -AssimpLibName &quot;$(AssimpLibName)&quot; -DirectXTexProject &quot;$(DirectXTexProject)&quot; -DirectXTexLibDir &quot;$(DirectXTexLibDir)&quot; -LlamaCppRoot &quot;$(LlamaCppRoot)&quot; -LlamaCppBuildRoot &quot;$(LlamaCppBuildRoot)&quot; -LlamaServerExe &quot;$(LlamaServerExe)&quot; -MSBuildPath &quot;$(MSBuildToolsPath)\MSBuild.exe&quot; -Configuration &quot;$(Configuration)&quot;" />
   </Target>
 </Project>

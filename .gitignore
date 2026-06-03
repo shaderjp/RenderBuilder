@@ -36,6 +36,7 @@
 *.swp
 imgui.ini
 Assets/RecentProjects.txt
+Assets/Models/**/*.gguf
 
 build/
 Build/

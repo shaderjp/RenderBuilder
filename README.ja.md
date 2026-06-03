@@ -19,6 +19,7 @@ RenderBuilder は、ランタイム HLSL 開発のための Windows / Visual Stu
 - [シーンファイルと基本操作](Docs/SceneAndControls.ja.md)
 - [シーン例とスクリーンショット](Docs/SceneExamples.ja.md)
 - [独自シェーダの作り方](Docs/CustomShaders.ja.md)
+- [AI Chat のセットアップ](Docs/AiChat.ja.md)
 - [RenderBuilder MCP Bridge](Tools/RenderBuilderMcp/README.md)
 
 ## 現在の MVP

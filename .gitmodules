@@ -11,3 +11,7 @@
 [submodule "ThirdParty/meshoptimizer"]
 	path = ThirdParty/meshoptimizer
 	url = https://github.com/zeux/meshoptimizer.git
+[submodule "ThirdParty/llama.cpp"]
+	path = ThirdParty/llama.cpp
+	url = https://github.com/ggml-org/llama.cpp.git
+	shallow = true

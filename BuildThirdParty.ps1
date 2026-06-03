@@ -4,6 +4,9 @@ param(
     [Parameter(Mandatory = $true)][string]$AssimpLibName,
     [Parameter(Mandatory = $true)][string]$DirectXTexProject,
     [Parameter(Mandatory = $true)][string]$DirectXTexLibDir,
+    [Parameter(Mandatory = $true)][string]$LlamaCppRoot,
+    [Parameter(Mandatory = $true)][string]$LlamaCppBuildRoot,
+    [Parameter(Mandatory = $true)][string]$LlamaServerExe,
     [Parameter(Mandatory = $true)][string]$MSBuildPath,
     [Parameter(Mandatory = $true)][string]$Configuration
 )
@@ -55,6 +58,30 @@ Invoke-WithMutex -Name "Local\RenderBuilderAssimp-$Configuration" -Body {
 
     if (!(Test-Path $assimpLibPath)) {
         cmake --build $AssimpBuildRoot --config $Configuration --target assimp --parallel
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
+    }
+}
+
+Invoke-WithMutex -Name "Local\RenderBuilderLlamaCpp-$Configuration" -Body {
+    $cachePath = Join-Path $LlamaCppBuildRoot 'CMakeCache.txt'
+
+    if (!(Test-Path $cachePath)) {
+        cmake -S $LlamaCppRoot -B $LlamaCppBuildRoot -G "Visual Studio 17 2022" -A x64 `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DLLAMA_BUILD_TESTS=OFF `
+            -DLLAMA_BUILD_TOOLS=ON `
+            -DLLAMA_BUILD_EXAMPLES=OFF `
+            -DLLAMA_BUILD_SERVER=ON `
+            -DLLAMA_BUILD_APP=OFF
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
+    }
+
+    if (!(Test-Path $LlamaServerExe)) {
+        cmake --build $LlamaCppBuildRoot --config $Configuration --target llama-server --parallel
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
         }
