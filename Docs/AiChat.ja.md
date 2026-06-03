@@ -84,6 +84,10 @@ AI Chat パネルには診断として `Ready wait`、`Checks`、`Last probe` �
 
 AI の `reply` は既定で日本語になります。ユーザーが明示的に別の言語を指定した場合だけ、その言語で返します。`actions` の `method` と `params` は local control handler に渡す JSON なので、英語の識別子のままです。
 
+## 表示
+
+AI Chat の入力欄とチャット履歴は 20px の文字サイズで表示します。RenderBuilder 全体の ImGui font は 16px のままなので、他の editor panel の密度は変わりません。
+
 ## 速度設定
 
 - `GPU Layers`: CUDA build では `Auto` または `All` を選びます。CPU だけで動かす場合は `CPU` を選びます。
