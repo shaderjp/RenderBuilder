@@ -46,6 +46,17 @@ ThirdParty/llama.cpp/Build/x64/Debug/bin/Debug/llama-server.exe
 
 RenderBuilder から起動する `llama-server` には `--jinja --reasoning off --reasoning-budget 0` を付けています。Gemma 4 の thinking 出力が `reasoning_content` 側に分離されて、通常のチャット本文が空になるのを避けるためです。
 
+## モデル状態
+
+`Load Model` を押すと、AI Chat は `llama-server` を起動して `/v1/models` を定期的に確認します。
+
+- `Starting`: `llama-server` の起動または HTTP endpoint の応答待ちです。
+- `Loading model`: プロセスは動いていますが、GGUF model を読み込み中です。この間の `llama-server HTTP 503: Loading model` は通常の読み込み状態です。
+- `Ready`: `/v1/models` が 200 を返しました。`Send` が有効になり、チャット送信できます。
+- `Failed`: プロセス終了、path 間違い、または 5 分以内に Ready にならなかった状態です。
+
+読み込み中は `Send` が無効になります。大きい GGUF を CPU/RAM/VRAM に展開するため、初回読み込みには数分かかる場合があります。
+
 ## 使い方
 
 1. `AI Chat` パネルで `llama-server` と `GGUF Model` の path を確認します。
@@ -58,3 +69,10 @@ RenderBuilder から起動する `llama-server` には `--jinja --reasoning off 
 `Auto Apply` は既定で無効です。安全確認が不要な運用になってから有効化してください。
 
 AI の `reply` は既定で日本語になります。ユーザーが明示的に別の言語を指定した場合だけ、その言語で返します。`actions` の `method` と `params` は local control handler に渡す JSON なので、英語の識別子のままです。
+
+## トラブルシュート
+
+- `Model: Loading model` のまま長い場合は、GPU layers、context tokens、利用可能な VRAM/RAM を見直してください。
+- `llama-server executable was not found.` が出る場合は、`ThirdParty/llama.cpp/Build/x64/.../llama-server.exe` が生成されているか確認してください。
+- `GGUF model file was not found.` が出る場合は、`Assets/Models/gemma-4-E4B-it/gemma-4-E4B-it-Q4_K_M.gguf` を配置してください。
+- `Failed` になった場合は `Stop Model` してから、設定を見直して `Load Model` し直してください。

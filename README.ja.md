@@ -36,6 +36,7 @@ RenderBuilder は、ランタイム HLSL 開発のための Windows / Visual Stu
 - imported material を material ごとの draw routing と shader set assignment で描画。
 - HDRI/SkyColor background、sun light、tone mapping、display mode、turntable、snapshot、Project JSON 復元を含む LookDev PBR preview。
 - Bistro 系の packed ORM に対応。`Specular` DDS を `R=AO`、`G=Roughness`、`B=Metallic` として評価できます。
+- `llama-server` と GGUF Gemma model を使う local AI Chat panel。モデルが `Ready` になるまで送信を抑止します。
 - `\\.\pipe\RenderBuilder.Control` 経由で LookDev / material 設定を操作する local MCP control bridge。
 
 ## LookDev ロードマップ

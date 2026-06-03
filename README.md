@@ -19,6 +19,7 @@ The current D3D12 preview path is being exercised with both glTF Sponza-style sc
 - [Scene files and controls (Japanese)](Docs/SceneAndControls.ja.md)
 - [Scene examples and screenshots (Japanese)](Docs/SceneExamples.ja.md)
 - [Custom shaders and HLSL ABI (Japanese)](Docs/CustomShaders.ja.md)
+- [AI Chat setup and local Gemma workflow (Japanese)](Docs/AiChat.ja.md)
 - [RenderBuilder MCP Bridge](Tools/RenderBuilderMcp/README.md)
 
 ## Current MVP
@@ -35,6 +36,7 @@ The current D3D12 preview path is being exercised with both glTF Sponza-style sc
 - Imported materials are rendered through per-material draw routing and shader set assignment.
 - LookDev PBR preview with HDRI/SkyColor background, sun light, tone mapping, display modes, turntable, snapshots, and Project JSON persistence.
 - Bistro-style packed ORM support: `Specular` DDS maps can be evaluated as `R=AO`, `G=Roughness`, `B=Metallic`.
+- Local AI Chat panel backed by `llama-server` and a GGUF Gemma model, with model readiness tracking before prompts are sent.
 - Optional local MCP control bridge for semantic LookDev/material commands through `\\.\pipe\RenderBuilder.Control`.
 
 ## LookDev Roadmap
