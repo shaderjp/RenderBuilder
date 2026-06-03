@@ -17,6 +17,7 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <system_error>
 
 extern "C" __declspec(dllexport) const UINT D3D12SDKVersion = 619;
 extern "C" __declspec(dllexport) const char* D3D12SDKPath = ".\\D3D12\\";
@@ -76,6 +77,40 @@ D3D12_RESOURCE_DESC BufferDesc(UINT64 size)
     desc.SampleDesc.Count = 1;
     desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     return desc;
+}
+
+bool FileExists(const char* path)
+{
+    std::error_code error;
+    return std::filesystem::exists(std::filesystem::path(path), error);
+}
+
+bool LoadJapaneseImGuiFont(ImGuiIO& io)
+{
+    const char* fontCandidates[] =
+    {
+        "C:\\Windows\\Fonts\\meiryo.ttc",
+        "C:\\Windows\\Fonts\\YuGothR.ttc",
+        "C:\\Windows\\Fonts\\BIZ-UDGothicR.ttc",
+        "C:\\Windows\\Fonts\\msgothic.ttc",
+    };
+
+    ImFontConfig fontConfig;
+    fontConfig.FontNo = 0;
+    const ImWchar* glyphRanges = io.Fonts->GetGlyphRangesJapanese();
+    for (const char* fontPath : fontCandidates)
+    {
+        if (!FileExists(fontPath))
+        {
+            continue;
+        }
+        if (io.Fonts->AddFontFromFileTTF(fontPath, 16.0f, &fontConfig, glyphRanges) != nullptr)
+        {
+            return true;
+        }
+    }
+
+    return io.Fonts->AddFontDefault() != nullptr;
 }
 
 D3D12_HEAP_PROPERTIES HeapProperties(D3D12_HEAP_TYPE type)
@@ -1495,6 +1530,7 @@ void D3D12Backend::InitializeImGui(HWND hwnd)
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    LoadJapaneseImGuiFont(io);
     ImGui::StyleColorsDark();
 
     ImGui_ImplWin32_Init(hwnd);
