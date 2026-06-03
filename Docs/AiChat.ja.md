@@ -50,9 +50,10 @@ RenderBuilder から起動する `llama-server` には `--jinja --reasoning off 
 
 1. `AI Chat` パネルで `llama-server` と `GGUF Model` の path を確認します。
 2. `Load Model` を押します。
-3. 入力欄に依頼を書いて `Send` を押します。
-4. AI が GUI 変更を提案した場合は `Suggested Actions` に表示されます。
-5. 内容を確認して `Apply Suggested Changes` を押すと、既存の local control handler 経由で反映されます。
+3. `Model: Ready` になるまで待ちます。読み込み中は `Send` が無効になります。
+4. 入力欄に依頼を書いて `Send` を押します。
+5. AI が GUI 変更を提案した場合は `Suggested Actions` に表示されます。
+6. 内容を確認して `Apply Suggested Changes` を押すと、既存の local control handler 経由で反映されます。
 
 `Auto Apply` は既定で無効です。安全確認が不要な運用になってから有効化してください。
 

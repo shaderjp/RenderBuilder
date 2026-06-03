@@ -78,6 +78,23 @@ void SetAiChatWindowDefaults()
     ImGui::SetNextWindowSizeConstraints(ImVec2(420.0f, 460.0f), ImVec2(FLT_MAX, FLT_MAX));
 }
 
+ImVec4 AiChatModelStateColor(rb::AiChatModelState state)
+{
+    switch (state)
+    {
+    case rb::AiChatModelState::Ready:
+        return ImVec4(0.35f, 0.85f, 0.45f, 1.0f);
+    case rb::AiChatModelState::Failed:
+        return ImVec4(1.0f, 0.35f, 0.25f, 1.0f);
+    case rb::AiChatModelState::Starting:
+    case rb::AiChatModelState::Loading:
+        return ImVec4(1.0f, 0.78f, 0.42f, 1.0f);
+    case rb::AiChatModelState::Stopped:
+    default:
+        return ImVec4(0.7f, 0.74f, 0.82f, 1.0f);
+    }
+}
+
 std::wstring LowerExtension(const std::filesystem::path& path)
 {
     std::wstring extension = path.extension().wstring();
@@ -3298,6 +3315,7 @@ void RenderBuilderApp::DrawAiChatPanel()
 
     const AiChatRuntimeStatus status = m_aiChatService.Status();
     ImGui::Text("Status: %s", m_aiStatus.c_str());
+    ImGui::TextColored(AiChatModelStateColor(status.modelState), "Model: %s", status.modelStateText.c_str());
     if (!status.lastError.empty())
     {
         ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "Error: %s", status.lastError.c_str());
@@ -3337,7 +3355,7 @@ void RenderBuilderApp::DrawAiChatPanel()
             config.useJinja = m_aiUseJinja;
             if (m_aiChatService.Start(config))
             {
-                m_aiStatus = "llama-server started. Send a prompt when the model finishes loading.";
+                m_aiStatus = "llama-server started. Waiting for model readiness...";
             }
             else
             {
@@ -3382,7 +3400,9 @@ void RenderBuilderApp::DrawAiChatPanel()
 
     ImGui::InputTextMultiline("##AIChatPrompt", m_aiPromptBuffer, sizeof(m_aiPromptBuffer), ImVec2(-FLT_MIN, 84.0f));
     const bool busy = status.busy;
-    if (busy)
+    const bool modelReady = status.modelState == AiChatModelState::Ready;
+    const bool sendDisabled = busy || !modelReady;
+    if (sendDisabled)
     {
         ImGui::BeginDisabled();
     }
@@ -3390,7 +3410,7 @@ void RenderBuilderApp::DrawAiChatPanel()
     {
         SubmitAiChatPrompt();
     }
-    if (busy)
+    if (sendDisabled)
     {
         ImGui::EndDisabled();
     }

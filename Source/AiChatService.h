@@ -52,6 +52,15 @@ struct AiChatEvent
     std::string text;
 };
 
+enum class AiChatModelState
+{
+    Stopped,
+    Starting,
+    Loading,
+    Ready,
+    Failed
+};
+
 struct AiChatRuntimeStatus
 {
     bool serverStartedByApp = false;
@@ -59,6 +68,8 @@ struct AiChatRuntimeStatus
     DWORD processId = 0;
     std::filesystem::path modelPath;
     std::string lastError;
+    AiChatModelState modelState = AiChatModelState::Stopped;
+    std::string modelStateText = "Stopped";
 };
 
 class AiChatService
@@ -77,10 +88,13 @@ public:
     AiChatRuntimeStatus Status() const;
 
 private:
+    void ReadyMonitorMain();
     void WorkerMain(std::vector<AiChatMessage> messages);
     std::string SendChatCompletion(const std::vector<AiChatMessage>& messages, std::string& error);
     void PushEvent(AiChatEvent::Kind kind, const std::string& text);
     void SetLastError(const std::string& error);
+    void SetModelState(AiChatModelState state, const std::string& text);
+    AiChatModelState ModelState() const;
     bool IsProcessAlive() const;
 
     AiChatConfig m_config;
@@ -90,7 +104,10 @@ private:
     mutable std::mutex m_mutex;
     std::deque<AiChatEvent> m_events;
     std::string m_lastError;
+    AiChatModelState m_modelState = AiChatModelState::Stopped;
+    std::string m_modelStateText = "Stopped";
 
+    std::thread m_readyWorker;
     std::thread m_worker;
     std::atomic<bool> m_busy = false;
     std::atomic<bool> m_stopRequested = false;

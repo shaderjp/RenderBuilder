@@ -390,6 +390,105 @@ bool PostJson(
     WinHttpCloseHandle(session);
     return true;
 }
+
+bool GetJson(
+    const std::string& host,
+    std::uint16_t port,
+    const wchar_t* path,
+    HttpResponse& response,
+    std::string& error)
+{
+    HINTERNET session = WinHttpOpen(
+        L"RenderBuilder AI Chat/1.0",
+        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+        WINHTTP_NO_PROXY_NAME,
+        WINHTTP_NO_PROXY_BYPASS,
+        0);
+    if (!session)
+    {
+        error = Win32ErrorMessage(GetLastError());
+        return false;
+    }
+
+    const std::wstring wideHost = Utf8ToWideLocal(host);
+    HINTERNET connect = WinHttpConnect(session, wideHost.c_str(), port, 0);
+    if (!connect)
+    {
+        error = Win32ErrorMessage(GetLastError());
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    HINTERNET request = WinHttpOpenRequest(connect, L"GET", path, nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
+    if (!request)
+    {
+        error = Win32ErrorMessage(GetLastError());
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    DWORD timeoutMs = 3000;
+    WinHttpSetOption(request, WINHTTP_OPTION_CONNECT_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
+    WinHttpSetOption(request, WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
+    WinHttpSetOption(request, WINHTTP_OPTION_SEND_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
+
+    if (!WinHttpSendRequest(
+            request,
+            WINHTTP_NO_ADDITIONAL_HEADERS,
+            0,
+            WINHTTP_NO_REQUEST_DATA,
+            0,
+            0,
+            0))
+    {
+        error = Win32ErrorMessage(GetLastError());
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    if (!WinHttpReceiveResponse(request, nullptr))
+    {
+        error = Win32ErrorMessage(GetLastError());
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    DWORD statusSize = sizeof(response.statusCode);
+    WinHttpQueryHeaders(
+        request,
+        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+        WINHTTP_HEADER_NAME_BY_INDEX,
+        &response.statusCode,
+        &statusSize,
+        WINHTTP_NO_HEADER_INDEX);
+
+    DWORD available = 0;
+    while (WinHttpQueryDataAvailable(request, &available) && available > 0)
+    {
+        std::string chunk(available, '\0');
+        DWORD downloaded = 0;
+        if (!WinHttpReadData(request, chunk.data(), available, &downloaded))
+        {
+            error = Win32ErrorMessage(GetLastError());
+            WinHttpCloseHandle(request);
+            WinHttpCloseHandle(connect);
+            WinHttpCloseHandle(session);
+            return false;
+        }
+        chunk.resize(downloaded);
+        response.body += chunk;
+    }
+
+    WinHttpCloseHandle(request);
+    WinHttpCloseHandle(connect);
+    WinHttpCloseHandle(session);
+    return true;
+}
 }
 
 AiChatService::~AiChatService()
@@ -404,21 +503,26 @@ bool AiChatService::Start(const AiChatConfig& config)
     m_config = config;
     m_stopRequested = false;
     SetLastError({});
+    SetModelState(AiChatModelState::Starting, "Starting");
 
     if (!config.startServer)
     {
+        SetModelState(AiChatModelState::Loading, "Checking external endpoint");
         PushEvent(AiChatEvent::Kind::Status, "Using external llama-server endpoint.");
+        m_readyWorker = std::thread(&AiChatService::ReadyMonitorMain, this);
         return true;
     }
 
     if (config.serverExecutable.empty() || !std::filesystem::exists(config.serverExecutable))
     {
         SetLastError("llama-server executable was not found.");
+        SetModelState(AiChatModelState::Failed, "Failed");
         return false;
     }
     if (config.modelPath.empty() || !std::filesystem::exists(config.modelPath))
     {
         SetLastError("GGUF model file was not found.");
+        SetModelState(AiChatModelState::Failed, "Failed");
         return false;
     }
 
@@ -463,12 +567,15 @@ bool AiChatService::Start(const AiChatConfig& config)
             &processInfo))
     {
         SetLastError("Failed to start llama-server: " + Win32ErrorMessage(GetLastError()));
+        SetModelState(AiChatModelState::Failed, "Failed");
         return false;
     }
 
     m_processInfo = processInfo;
     m_hasProcess = true;
-    PushEvent(AiChatEvent::Kind::Status, "Started llama-server. The first request may wait while the model loads.");
+    SetModelState(AiChatModelState::Loading, "Loading model");
+    PushEvent(AiChatEvent::Kind::Status, "Started llama-server. Loading local model...");
+    m_readyWorker = std::thread(&AiChatService::ReadyMonitorMain, this);
     return true;
 }
 
@@ -478,6 +585,10 @@ void AiChatService::Stop()
     if (m_worker.joinable())
     {
         m_worker.join();
+    }
+    if (m_readyWorker.joinable())
+    {
+        m_readyWorker.join();
     }
     m_busy = false;
 
@@ -493,6 +604,7 @@ void AiChatService::Stop()
         m_processInfo = {};
         m_hasProcess = false;
     }
+    SetModelState(AiChatModelState::Stopped, "Stopped");
 }
 
 bool AiChatService::Submit(const std::vector<AiChatMessage>& messages)
@@ -505,6 +617,11 @@ bool AiChatService::Submit(const std::vector<AiChatMessage>& messages)
     if (messages.empty())
     {
         SetLastError("AI chat request had no messages.");
+        return false;
+    }
+    if (ModelState() != AiChatModelState::Ready)
+    {
+        SetLastError("AI model is not ready yet.");
         return false;
     }
     if (m_worker.joinable())
@@ -535,7 +652,70 @@ AiChatRuntimeStatus AiChatService::Status() const
     status.processId = m_hasProcess ? m_processInfo.dwProcessId : 0;
     status.modelPath = m_config.modelPath;
     status.lastError = m_lastError;
+    status.modelState = m_modelState;
+    status.modelStateText = m_modelStateText;
     return status;
+}
+
+void AiChatService::ReadyMonitorMain()
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+    std::string lastStatus;
+
+    while (!m_stopRequested)
+    {
+        if (m_hasProcess && !IsProcessAlive())
+        {
+            SetModelState(AiChatModelState::Failed, "Failed");
+            SetLastError("llama-server stopped before the model became ready.");
+            PushEvent(AiChatEvent::Kind::Error, "llama-server stopped before the model became ready.");
+            return;
+        }
+
+        HttpResponse response;
+        std::string requestError;
+        std::string nextStatus;
+        AiChatModelState nextState = AiChatModelState::Starting;
+        if (GetJson(m_config.host, m_config.port, L"/v1/models", response, requestError))
+        {
+            if (response.statusCode == 200)
+            {
+                SetModelState(AiChatModelState::Ready, "Ready");
+                SetLastError({});
+                PushEvent(AiChatEvent::Kind::Status, "AI model ready.");
+                return;
+            }
+
+            nextState = AiChatModelState::Loading;
+            nextStatus = "Loading model";
+            if (response.statusCode >= 400 && !IsModelLoadingResponse(response))
+            {
+                nextStatus = "Waiting for model endpoint";
+            }
+        }
+        else
+        {
+            nextState = AiChatModelState::Starting;
+            nextStatus = "Starting llama-server";
+        }
+
+        if (nextStatus != lastStatus)
+        {
+            SetModelState(nextState, nextStatus);
+            PushEvent(AiChatEvent::Kind::Status, nextStatus + "...");
+            lastStatus = nextStatus;
+        }
+
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            SetModelState(AiChatModelState::Failed, "Failed");
+            SetLastError("AI model did not become ready within 5 minutes.");
+            PushEvent(AiChatEvent::Kind::Error, "AI model did not become ready within 5 minutes.");
+            return;
+        }
+
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
 }
 
 void AiChatService::WorkerMain(std::vector<AiChatMessage> messages)
@@ -634,6 +814,19 @@ void AiChatService::SetLastError(const std::string& error)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_lastError = error;
+}
+
+void AiChatService::SetModelState(AiChatModelState state, const std::string& text)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_modelState = state;
+    m_modelStateText = text;
+}
+
+AiChatModelState AiChatService::ModelState() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_modelState;
 }
 
 bool AiChatService::IsProcessAlive() const
