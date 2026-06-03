@@ -44,6 +44,8 @@ ThirdParty/llama.cpp/Build/x64/Release/bin/Release/llama-server.exe
 ThirdParty/llama.cpp/Build/x64/Debug/bin/Debug/llama-server.exe
 ```
 
+RenderBuilder から起動する `llama-server` には `--jinja --reasoning off --reasoning-budget 0` を付けています。Gemma 4 の thinking 出力が `reasoning_content` 側に分離されて、通常のチャット本文が空になるのを避けるためです。
+
 ## 使い方
 
 1. `AI Chat` パネルで `llama-server` と `GGUF Model` の path を確認します。

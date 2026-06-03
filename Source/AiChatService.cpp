@@ -402,7 +402,9 @@ bool AiChatService::Start(const AiChatConfig& config)
             << L" -ngl " << config.gpuLayers
             << L" --temp " << config.temperature
             << L" --top-p " << config.topP
-            << L" --top-k " << config.topK;
+            << L" --top-k " << config.topK
+            << L" --reasoning off"
+            << L" --reasoning-budget 0";
     if (config.threads > 0)
     {
         command << L" -t " << config.threads;
