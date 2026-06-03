@@ -78,7 +78,7 @@ public:
 
 private:
     void WorkerMain(std::vector<AiChatMessage> messages);
-    std::string SendChatCompletion(const std::vector<AiChatMessage>& messages, std::string& error) const;
+    std::string SendChatCompletion(const std::vector<AiChatMessage>& messages, std::string& error);
     void PushEvent(AiChatEvent::Kind kind, const std::string& text);
     void SetLastError(const std::string& error);
     bool IsProcessAlive() const;

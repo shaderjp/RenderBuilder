@@ -262,6 +262,35 @@ struct HttpResponse
     std::string body;
 };
 
+std::string HttpResponseMessage(const HttpResponse& response)
+{
+    std::string message;
+    if (!FindJsonStringProperty(response.body, "message", message))
+    {
+        message = response.body;
+    }
+    return message;
+}
+
+std::string ToLowerAscii(std::string text)
+{
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return text;
+}
+
+bool IsModelLoadingResponse(const HttpResponse& response)
+{
+    if (response.statusCode != 503)
+    {
+        return false;
+    }
+
+    const std::string message = ToLowerAscii(HttpResponseMessage(response));
+    return message.find("loading model") != std::string::npos;
+}
+
 bool PostJson(
     const std::string& host,
     std::uint16_t port,
@@ -526,18 +555,34 @@ void AiChatService::WorkerMain(std::vector<AiChatMessage> messages)
     m_busy = false;
 }
 
-std::string AiChatService::SendChatCompletion(const std::vector<AiChatMessage>& messages, std::string& error) const
+std::string AiChatService::SendChatCompletion(const std::vector<AiChatMessage>& messages, std::string& error)
 {
     const std::string body = BuildChatCompletionBody(m_config, messages);
     HttpResponse response;
+    bool notifiedModelLoading = false;
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
     do
     {
         std::string requestError;
         response = {};
         if (PostJson(m_config.host, m_config.port, L"/v1/chat/completions", body, response, requestError))
         {
+            if (IsModelLoadingResponse(response))
+            {
+                if (!notifiedModelLoading)
+                {
+                    PushEvent(AiChatEvent::Kind::Status, "The local model is still loading. The request will be retried automatically.");
+                    notifiedModelLoading = true;
+                }
+                if (m_stopRequested)
+                {
+                    error = "AI chat request was stopped.";
+                    return {};
+                }
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                continue;
+            }
             break;
         }
         if (m_stopRequested)
@@ -561,11 +606,7 @@ std::string AiChatService::SendChatCompletion(const std::vector<AiChatMessage>& 
 
     if (response.statusCode >= 400)
     {
-        std::string message;
-        if (!FindJsonStringProperty(response.body, "message", message))
-        {
-            message = response.body;
-        }
+        const std::string message = HttpResponseMessage(response);
         std::ostringstream stream;
         stream << "llama-server HTTP " << response.statusCode << ": " << message;
         error = stream.str();
