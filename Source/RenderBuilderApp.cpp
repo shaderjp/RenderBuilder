@@ -52,6 +52,9 @@ constexpr const wchar_t* EnvironmentFileFilter = L"Environment Files\0*.hdr;*.dd
 constexpr const char* LookDevShaderSetName = "LookDev PBR";
 constexpr const char* DefaultRasterShaderSetName = "Default Raster Shader";
 constexpr const char* CustomLookDevPresetName = "Custom";
+constexpr float AiChatTextFontSize = 20.0f;
+constexpr float AiChatTranscriptHeight = 300.0f;
+constexpr float AiChatPromptHeight = 108.0f;
 
 void SetAiChatWindowDefaults()
 {
@@ -3437,7 +3440,8 @@ void RenderBuilderApp::DrawAiChatPanel()
     }
 
     ImGui::Separator();
-    ImGui::BeginChild("AIChatTranscript", ImVec2(0.0f, 240.0f), true, ImGuiWindowFlags_HorizontalScrollbar);
+    ImGui::PushFont(nullptr, AiChatTextFontSize);
+    ImGui::BeginChild("AIChatTranscript", ImVec2(0.0f, AiChatTranscriptHeight), true, ImGuiWindowFlags_HorizontalScrollbar);
     for (const AiChatTranscriptEntry& entry : m_aiTranscript)
     {
         ImVec4 color = ImVec4(0.82f, 0.86f, 0.92f, 1.0f);
@@ -3463,8 +3467,11 @@ void RenderBuilderApp::DrawAiChatPanel()
         ImGui::SetScrollHereY(1.0f);
     }
     ImGui::EndChild();
+    ImGui::PopFont();
 
-    ImGui::InputTextMultiline("##AIChatPrompt", m_aiPromptBuffer, sizeof(m_aiPromptBuffer), ImVec2(-FLT_MIN, 84.0f));
+    ImGui::PushFont(nullptr, AiChatTextFontSize);
+    ImGui::InputTextMultiline("##AIChatPrompt", m_aiPromptBuffer, sizeof(m_aiPromptBuffer), ImVec2(-FLT_MIN, AiChatPromptHeight));
+    ImGui::PopFont();
     const bool busy = status.busy;
     const bool modelReady = status.modelState == AiChatModelState::Ready;
     const bool sendDisabled = busy || !modelReady;
