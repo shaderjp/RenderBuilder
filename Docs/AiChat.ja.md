@@ -46,6 +46,18 @@ ThirdParty/llama.cpp/Build/x64/Debug/bin/Debug/llama-server.exe
 
 RenderBuilder から起動する `llama-server` には `--jinja --reasoning off --reasoning-budget 0` を付けています。Gemma 4 の thinking 出力が `reasoning_content` 側に分離されて、通常のチャット本文が空になるのを避けるためです。
 
+### CUDA build
+
+`BuildThirdParty.ps1` は既定で `LlamaCuda=Auto` として動きます。CUDA Toolkit の `nvcc` が見つかった場合は `llama.cpp` を `GGML_CUDA=ON` で構成し、見つからない場合は CPU build のまま進みます。
+
+明示的に指定したい場合は MSBuild property を使います。
+
+```powershell
+& "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" RenderBuilder.sln /m /p:Configuration=Release /p:Platform=x64 /p:LlamaCuda=ON
+```
+
+`LlamaCuda=ON` は CUDA Toolkit がない環境では失敗します。速度確認は Release build の `llama-server.exe` を優先してください。
+
 ## モデル状態
 
 `Load Model` を押すと、AI Chat は `llama-server` を起動して `/v1/models` を定期的に確認します。
@@ -56,6 +68,8 @@ RenderBuilder から起動する `llama-server` には `--jinja --reasoning off 
 - `Failed`: プロセス終了、path 間違い、または 5 分以内に Ready にならなかった状態です。
 
 読み込み中は `Send` が無効になります。大きい GGUF を CPU/RAM/VRAM に展開するため、初回読み込みには数分かかる場合があります。
+
+AI Chat パネルには診断として `Ready wait`、`Checks`、`Last probe` も表示します。`Last probe: HTTP 503` は `Loading model` と同じく読み込み中を示すことがあり、`Ready wait` が伸び続ける場合は VRAM/RAM や `GPU Layers`、`Context Tokens` を見直してください。
 
 ## 使い方
 
@@ -70,9 +84,17 @@ RenderBuilder から起動する `llama-server` には `--jinja --reasoning off 
 
 AI の `reply` は既定で日本語になります。ユーザーが明示的に別の言語を指定した場合だけ、その言語で返します。`actions` の `method` と `params` は local control handler に渡す JSON なので、英語の識別子のままです。
 
+## 速度設定
+
+- `GPU Layers`: CUDA build では `Auto` または `All` を選びます。CPU だけで動かす場合は `CPU` を選びます。
+- `Context Tokens`: 速度優先では `4096`、さらに軽くする場合は `2048` に下げます。
+- `Max Reply Tokens`: 通常の GUI 操作用途では `512` または `256` が扱いやすいです。
+- `Threads`: CPU build の場合だけ調整します。`0` は llama.cpp の既定値です。
+
 ## トラブルシュート
 
 - `Model: Loading model` のまま長い場合は、GPU layers、context tokens、利用可能な VRAM/RAM を見直してください。
+- CUDA build になっているかは `ThirdParty/llama.cpp/Build/x64/<Configuration>/CMakeCache.txt` の `GGML_CUDA:BOOL=ON` で確認できます。
 - `llama-server executable was not found.` が出る場合は、`ThirdParty/llama.cpp/Build/x64/.../llama-server.exe` が生成されているか確認してください。
 - `GGUF model file was not found.` が出る場合は、`Assets/Models/gemma-4-E4B-it/gemma-4-E4B-it-Q4_K_M.gguf` を配置してください。
 - `Failed` になった場合は `Stop Model` してから、設定を見直して `Load Model` し直してください。

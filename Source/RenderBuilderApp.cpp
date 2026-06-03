@@ -95,6 +95,23 @@ ImVec4 AiChatModelStateColor(rb::AiChatModelState state)
     }
 }
 
+const char* AiGpuLayerModeLabel(int mode)
+{
+    switch (mode)
+    {
+    case 0:
+        return "Auto";
+    case 1:
+        return "All";
+    case 2:
+        return "CPU";
+    case 3:
+        return "Manual";
+    default:
+        return "Auto";
+    }
+}
+
 std::wstring LowerExtension(const std::filesystem::path& path)
 {
     std::wstring extension = path.extension().wstring();
@@ -3324,6 +3341,21 @@ void RenderBuilderApp::DrawAiChatPanel()
     {
         ImGui::Text("llama-server PID: %lu", static_cast<unsigned long>(status.processId));
     }
+    if (status.modelState != AiChatModelState::Stopped)
+    {
+        ImGui::TextDisabled(
+            "Ready wait: %.0fs  Checks: %d",
+            std::max(0.0, status.modelLoadSeconds),
+            status.readyCheckCount);
+        if (status.lastReadyHttpStatus != 0)
+        {
+            ImGui::TextDisabled("Last probe: HTTP %lu", static_cast<unsigned long>(status.lastReadyHttpStatus));
+        }
+        else if (!status.lastReadyError.empty())
+        {
+            ImGui::TextWrapped("Last probe: %s", status.lastReadyError.c_str());
+        }
+    }
 
     if (ImGui::CollapsingHeader("Model Runtime", ImGuiTreeNodeFlags_DefaultOpen))
     {
@@ -3332,7 +3364,26 @@ void RenderBuilderApp::DrawAiChatPanel()
         ImGui::InputInt("Port", &m_aiServerPort);
         ImGui::InputInt("Context Tokens", &m_aiContextTokens);
         ImGui::InputInt("Max Reply Tokens", &m_aiMaxTokens);
-        ImGui::InputInt("GPU Layers", &m_aiGpuLayers);
+        if (ImGui::BeginCombo("GPU Layers", AiGpuLayerModeLabel(m_aiGpuLayerMode)))
+        {
+            for (int mode = 0; mode < 4; ++mode)
+            {
+                const bool selected = m_aiGpuLayerMode == mode;
+                if (ImGui::Selectable(AiGpuLayerModeLabel(mode), selected))
+                {
+                    m_aiGpuLayerMode = mode;
+                }
+                if (selected)
+                {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+        if (m_aiGpuLayerMode == 3)
+        {
+            ImGui::InputInt("Manual GPU Layers", &m_aiGpuLayers);
+        }
         ImGui::InputInt("Threads", &m_aiThreads);
         ImGui::SliderFloat("Temperature", &m_aiTemperature, 0.0f, 2.0f);
         ImGui::SliderFloat("Top P", &m_aiTopP, 0.05f, 1.0f);
@@ -3347,7 +3398,22 @@ void RenderBuilderApp::DrawAiChatPanel()
             config.port = static_cast<std::uint16_t>(std::clamp(m_aiServerPort, 1, 65535));
             config.contextTokens = std::max(1024, m_aiContextTokens);
             config.maxTokens = std::max(64, m_aiMaxTokens);
-            config.gpuLayers = std::max(0, m_aiGpuLayers);
+            switch (m_aiGpuLayerMode)
+            {
+            case 1:
+                config.gpuLayers = "all";
+                break;
+            case 2:
+                config.gpuLayers = "0";
+                break;
+            case 3:
+                config.gpuLayers = std::to_string(std::max(0, m_aiGpuLayers));
+                break;
+            case 0:
+            default:
+                config.gpuLayers = "auto";
+                break;
+            }
             config.threads = std::max(0, m_aiThreads);
             config.temperature = std::clamp(m_aiTemperature, 0.0f, 2.0f);
             config.topP = std::clamp(m_aiTopP, 0.05f, 1.0f);

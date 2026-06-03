@@ -503,6 +503,7 @@ bool AiChatService::Start(const AiChatConfig& config)
     m_config = config;
     m_stopRequested = false;
     SetLastError({});
+    ResetReadyDiagnostics();
     SetModelState(AiChatModelState::Starting, "Starting");
 
     if (!config.startServer)
@@ -532,7 +533,7 @@ bool AiChatService::Start(const AiChatConfig& config)
             << L" --host " << Utf8ToWideLocal(config.host)
             << L" --port " << config.port
             << L" -c " << config.contextTokens
-            << L" -ngl " << config.gpuLayers
+            << L" -ngl " << Utf8ToWideLocal(config.gpuLayers)
             << L" --temp " << config.temperature
             << L" --top-p " << config.topP
             << L" --top-k " << config.topK
@@ -654,6 +655,15 @@ AiChatRuntimeStatus AiChatService::Status() const
     status.lastError = m_lastError;
     status.modelState = m_modelState;
     status.modelStateText = m_modelStateText;
+    status.modelLoadSeconds = m_modelLoadSeconds;
+    if (m_modelLoadStartTime != std::chrono::steady_clock::time_point{} &&
+        (m_modelState == AiChatModelState::Starting || m_modelState == AiChatModelState::Loading))
+    {
+        status.modelLoadSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - m_modelLoadStartTime).count();
+    }
+    status.readyCheckCount = m_readyCheckCount;
+    status.lastReadyHttpStatus = m_lastReadyHttpStatus;
+    status.lastReadyError = m_lastReadyError;
     return status;
 }
 
@@ -678,6 +688,7 @@ void AiChatService::ReadyMonitorMain()
         AiChatModelState nextState = AiChatModelState::Starting;
         if (GetJson(m_config.host, m_config.port, L"/v1/models", response, requestError))
         {
+            RecordReadyProbe(response.statusCode, response.statusCode == 200 ? std::string{} : HttpResponseMessage(response));
             if (response.statusCode == 200)
             {
                 SetModelState(AiChatModelState::Ready, "Ready");
@@ -695,6 +706,7 @@ void AiChatService::ReadyMonitorMain()
         }
         else
         {
+            RecordReadyProbe(0, requestError);
             nextState = AiChatModelState::Starting;
             nextStatus = "Starting llama-server";
         }
@@ -819,8 +831,31 @@ void AiChatService::SetLastError(const std::string& error)
 void AiChatService::SetModelState(AiChatModelState state, const std::string& text)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    if ((state == AiChatModelState::Ready || state == AiChatModelState::Failed || state == AiChatModelState::Stopped) &&
+        m_modelLoadStartTime != std::chrono::steady_clock::time_point{})
+    {
+        m_modelLoadSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - m_modelLoadStartTime).count();
+    }
     m_modelState = state;
     m_modelStateText = text;
+}
+
+void AiChatService::ResetReadyDiagnostics()
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_modelLoadStartTime = std::chrono::steady_clock::now();
+    m_modelLoadSeconds = 0.0;
+    m_readyCheckCount = 0;
+    m_lastReadyHttpStatus = 0;
+    m_lastReadyError.clear();
+}
+
+void AiChatService::RecordReadyProbe(DWORD httpStatus, const std::string& error)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    ++m_readyCheckCount;
+    m_lastReadyHttpStatus = httpStatus;
+    m_lastReadyError = error;
 }
 
 AiChatModelState AiChatService::ModelState() const

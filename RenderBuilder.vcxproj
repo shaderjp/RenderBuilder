@@ -53,6 +53,7 @@
     <LlamaCppRoot>$(ProjectDir)ThirdParty\llama.cpp</LlamaCppRoot>
     <LlamaCppBuildRoot>$(LlamaCppRoot)\Build\$(Platform)\$(Configuration)</LlamaCppBuildRoot>
     <LlamaServerExe>$(LlamaCppBuildRoot)\bin\$(Configuration)\llama-server.exe</LlamaServerExe>
+    <LlamaCuda>Auto</LlamaCuda>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -142,6 +143,6 @@
     <Error Condition="!Exists('$(ProjectDir)ThirdParty\llama.cpp\CMakeLists.txt')" Text="ThirdParty\llama.cpp is missing. Add it with: git submodule add --depth 1 https://github.com/ggml-org/llama.cpp.git ThirdParty/llama.cpp" />
   </Target>
   <Target Name="BuildThirdParty" BeforeTargets="ClCompile">
-    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)BuildThirdParty.ps1&quot; -AssimpRoot &quot;$(AssimpRoot)&quot; -AssimpBuildRoot &quot;$(AssimpBuildRoot)&quot; -AssimpLibName &quot;$(AssimpLibName)&quot; -DirectXTexProject &quot;$(DirectXTexProject)&quot; -DirectXTexLibDir &quot;$(DirectXTexLibDir)&quot; -LlamaCppRoot &quot;$(LlamaCppRoot)&quot; -LlamaCppBuildRoot &quot;$(LlamaCppBuildRoot)&quot; -LlamaServerExe &quot;$(LlamaServerExe)&quot; -MSBuildPath &quot;$(MSBuildToolsPath)\MSBuild.exe&quot; -Configuration &quot;$(Configuration)&quot;" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)BuildThirdParty.ps1&quot; -AssimpRoot &quot;$(AssimpRoot)&quot; -AssimpBuildRoot &quot;$(AssimpBuildRoot)&quot; -AssimpLibName &quot;$(AssimpLibName)&quot; -DirectXTexProject &quot;$(DirectXTexProject)&quot; -DirectXTexLibDir &quot;$(DirectXTexLibDir)&quot; -LlamaCppRoot &quot;$(LlamaCppRoot)&quot; -LlamaCppBuildRoot &quot;$(LlamaCppBuildRoot)&quot; -LlamaServerExe &quot;$(LlamaServerExe)&quot; -MSBuildPath &quot;$(MSBuildToolsPath)\MSBuild.exe&quot; -Configuration &quot;$(Configuration)&quot; -LlamaCuda &quot;$(LlamaCuda)&quot;" />
   </Target>
 </Project>

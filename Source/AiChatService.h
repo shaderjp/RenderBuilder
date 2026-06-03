@@ -6,6 +6,7 @@
 #include <Windows.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -28,9 +29,9 @@ struct AiChatConfig
     std::filesystem::path modelPath;
     std::string host = "127.0.0.1";
     std::uint16_t port = 18080;
-    int contextTokens = 8192;
-    int maxTokens = 1024;
-    int gpuLayers = 0;
+    int contextTokens = 4096;
+    int maxTokens = 512;
+    std::string gpuLayers = "auto";
     int threads = 0;
     float temperature = 1.0f;
     float topP = 0.95f;
@@ -70,6 +71,10 @@ struct AiChatRuntimeStatus
     std::string lastError;
     AiChatModelState modelState = AiChatModelState::Stopped;
     std::string modelStateText = "Stopped";
+    double modelLoadSeconds = 0.0;
+    int readyCheckCount = 0;
+    DWORD lastReadyHttpStatus = 0;
+    std::string lastReadyError;
 };
 
 class AiChatService
@@ -94,6 +99,8 @@ private:
     void PushEvent(AiChatEvent::Kind kind, const std::string& text);
     void SetLastError(const std::string& error);
     void SetModelState(AiChatModelState state, const std::string& text);
+    void ResetReadyDiagnostics();
+    void RecordReadyProbe(DWORD httpStatus, const std::string& error);
     AiChatModelState ModelState() const;
     bool IsProcessAlive() const;
 
@@ -106,6 +113,11 @@ private:
     std::string m_lastError;
     AiChatModelState m_modelState = AiChatModelState::Stopped;
     std::string m_modelStateText = "Stopped";
+    std::chrono::steady_clock::time_point m_modelLoadStartTime = {};
+    double m_modelLoadSeconds = 0.0;
+    int m_readyCheckCount = 0;
+    DWORD m_lastReadyHttpStatus = 0;
+    std::string m_lastReadyError;
 
     std::thread m_readyWorker;
     std::thread m_worker;

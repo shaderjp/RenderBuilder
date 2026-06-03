@@ -211,9 +211,10 @@ private:
     char m_aiModelPathBuffer[1024] = {};
     char m_aiServerPathBuffer[1024] = {};
     int m_aiServerPort = 18080;
-    int m_aiContextTokens = 8192;
-    int m_aiMaxTokens = 1024;
-    int m_aiGpuLayers = 0;
+    int m_aiContextTokens = 4096;
+    int m_aiMaxTokens = 512;
+    int m_aiGpuLayerMode = 0;
+    int m_aiGpuLayers = 99;
     int m_aiThreads = 0;
     float m_aiTemperature = 1.0f;
     float m_aiTopP = 0.95f;
