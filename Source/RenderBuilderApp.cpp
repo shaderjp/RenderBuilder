@@ -53,6 +53,31 @@ constexpr const char* LookDevShaderSetName = "LookDev PBR";
 constexpr const char* DefaultRasterShaderSetName = "Default Raster Shader";
 constexpr const char* CustomLookDevPresetName = "Custom";
 
+void SetAiChatWindowDefaults()
+{
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    if (!viewport)
+    {
+        return;
+    }
+
+    constexpr float margin = 16.0f;
+    const ImVec2 workPos = viewport->WorkPos;
+    const ImVec2 workSize = viewport->WorkSize;
+    const float maxWidth = std::max(360.0f, workSize.x - margin * 2.0f);
+    const float maxHeight = std::max(360.0f, workSize.y - margin * 2.0f);
+    const float width = std::min(maxWidth, std::max(std::min(560.0f, maxWidth), workSize.x * 0.38f));
+    const float height = std::min(maxHeight, std::max(std::min(620.0f, maxHeight), workSize.y * 0.78f));
+    const ImVec2 size(width, height);
+    const ImVec2 pos(
+        workPos.x + std::max(margin, workSize.x - width - margin),
+        workPos.y + margin);
+
+    ImGui::SetNextWindowPos(pos, ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(size, ImGuiCond_Appearing);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(420.0f, 460.0f), ImVec2(FLT_MAX, FLT_MAX));
+}
+
 std::wstring LowerExtension(const std::filesystem::path& path)
 {
     std::wstring extension = path.extension().wstring();
@@ -3268,6 +3293,7 @@ void RenderBuilderApp::DrawAutomationPanel()
 
 void RenderBuilderApp::DrawAiChatPanel()
 {
+    SetAiChatWindowDefaults();
     ImGui::Begin("AI Chat");
 
     const AiChatRuntimeStatus status = m_aiChatService.Status();
