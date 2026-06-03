@@ -55,3 +55,5 @@ RenderBuilder から起動する `llama-server` には `--jinja --reasoning off 
 5. 内容を確認して `Apply Suggested Changes` を押すと、既存の local control handler 経由で反映されます。
 
 `Auto Apply` は既定で無効です。安全確認が不要な運用になってから有効化してください。
+
+AI の `reply` は既定で日本語になります。ユーザーが明示的に別の言語を指定した場合だけ、その言語で返します。`actions` の `method` と `params` は local control handler に渡す JSON なので、英語の識別子のままです。
