@@ -75,6 +75,7 @@ private:
     bool ApplyPendingSceneTargetResize();
     void DrawUi();
     void DrawDockspace();
+    void DrawWindowMenu();
     void DrawViewportPanel();
     void DrawShaderEditorPanel();
     void DrawMaterialInspectorPanel();
@@ -168,6 +169,14 @@ private:
     UINT m_pendingSceneTargetHeight = 0;
     std::uint32_t m_resizeDeferFrames = 0;
     std::uint32_t m_sceneTargetResizeDeferFrames = 0;
+    bool m_showViewportPanel = true;
+    bool m_showShaderEditorPanel = true;
+    bool m_showMaterialInspectorPanel = true;
+    bool m_showAssetBrowserPanel = true;
+    bool m_showAutomationPanel = true;
+    bool m_showAiChatPanel = true;
+    bool m_showDiagnosticsPanel = true;
+    bool m_showStatsPanel = true;
 
     std::filesystem::path m_rootDirectory;
     std::unique_ptr<DxcShaderCompiler> m_shaderCompiler;

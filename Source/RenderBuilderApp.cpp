@@ -2235,14 +2235,38 @@ bool RenderBuilderApp::ApplyPendingSceneTargetResize()
 void RenderBuilderApp::DrawUi()
 {
     DrawDockspace();
-    DrawViewportPanel();
-    DrawShaderEditorPanel();
-    DrawMaterialInspectorPanel();
-    DrawAssetBrowserPanel();
-    DrawAutomationPanel();
-    DrawAiChatPanel();
-    DrawDiagnosticsPanel();
-    DrawStatsPanel();
+    if (m_showViewportPanel)
+    {
+        DrawViewportPanel();
+    }
+    if (m_showShaderEditorPanel)
+    {
+        DrawShaderEditorPanel();
+    }
+    if (m_showMaterialInspectorPanel)
+    {
+        DrawMaterialInspectorPanel();
+    }
+    if (m_showAssetBrowserPanel)
+    {
+        DrawAssetBrowserPanel();
+    }
+    if (m_showAutomationPanel)
+    {
+        DrawAutomationPanel();
+    }
+    if (m_showAiChatPanel)
+    {
+        DrawAiChatPanel();
+    }
+    if (m_showDiagnosticsPanel)
+    {
+        DrawDiagnosticsPanel();
+    }
+    if (m_showStatsPanel)
+    {
+        DrawStatsPanel();
+    }
 }
 
 void RenderBuilderApp::DrawDockspace()
@@ -2324,6 +2348,7 @@ void RenderBuilderApp::DrawDockspace()
             }
             ImGui::EndMenu();
         }
+        DrawWindowMenu();
         ImGui::EndMenuBar();
     }
 
@@ -2332,10 +2357,45 @@ void RenderBuilderApp::DrawDockspace()
     ImGui::End();
 }
 
+void RenderBuilderApp::DrawWindowMenu()
+{
+    if (!ImGui::BeginMenu("Window"))
+    {
+        return;
+    }
+
+    ImGui::MenuItem("Viewport", nullptr, &m_showViewportPanel);
+    ImGui::MenuItem("Shader Editor", nullptr, &m_showShaderEditorPanel);
+    ImGui::MenuItem("Material Inspector", nullptr, &m_showMaterialInspectorPanel);
+    ImGui::MenuItem("Scene / Asset Browser", nullptr, &m_showAssetBrowserPanel);
+    ImGui::MenuItem("Automation", nullptr, &m_showAutomationPanel);
+    ImGui::MenuItem("AI Chat", nullptr, &m_showAiChatPanel);
+    ImGui::MenuItem("Compile Diagnostics", nullptr, &m_showDiagnosticsPanel);
+    ImGui::MenuItem("Renderer Stats", nullptr, &m_showStatsPanel);
+    ImGui::Separator();
+    if (ImGui::MenuItem("Show All"))
+    {
+        m_showViewportPanel = true;
+        m_showShaderEditorPanel = true;
+        m_showMaterialInspectorPanel = true;
+        m_showAssetBrowserPanel = true;
+        m_showAutomationPanel = true;
+        m_showAiChatPanel = true;
+        m_showDiagnosticsPanel = true;
+        m_showStatsPanel = true;
+    }
+    ImGui::EndMenu();
+}
+
 void RenderBuilderApp::DrawViewportPanel()
 {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::Begin("Viewport");
+    if (!ImGui::Begin("Viewport", &m_showViewportPanel))
+    {
+        ImGui::End();
+        ImGui::PopStyleVar();
+        return;
+    }
     const ImVec2 available = ImGui::GetContentRegionAvail();
     if (available.x < 1.0f || available.y < 1.0f)
     {
@@ -2425,7 +2485,11 @@ void RenderBuilderApp::HandleViewportCameraControls()
 
 void RenderBuilderApp::DrawShaderEditorPanel()
 {
-    ImGui::Begin("Shader Editor");
+    if (!ImGui::Begin("Shader Editor", &m_showShaderEditorPanel))
+    {
+        ImGui::End();
+        return;
+    }
     if (ImGui::BeginCombo("Shader Set", m_activeShaderSet.name.c_str()))
     {
         for (std::size_t i = 0; i < m_project.shaderSets.size(); ++i)
@@ -2738,7 +2802,11 @@ void RenderBuilderApp::DrawMaterialShaderAssignmentOverview()
 
 void RenderBuilderApp::DrawMaterialInspectorPanel()
 {
-    ImGui::Begin("Material Inspector");
+    if (!ImGui::Begin("Material Inspector", &m_showMaterialInspectorPanel))
+    {
+        ImGui::End();
+        return;
+    }
     if (m_project.materialAssignments.empty())
     {
         ImGui::TextUnformatted("No imported materials yet.");
@@ -2884,7 +2952,11 @@ void RenderBuilderApp::DrawMaterialInspectorPanel()
 
 void RenderBuilderApp::DrawAssetBrowserPanel()
 {
-    ImGui::Begin("Scene / Asset Browser");
+    if (!ImGui::Begin("Scene / Asset Browser", &m_showAssetBrowserPanel))
+    {
+        ImGui::End();
+        return;
+    }
     ImGui::Text("Root: %s", m_rootDirectory.string().c_str());
     ImGui::Text("Project: %s%s",
         m_projectDirty ? "*" : "",
@@ -3286,7 +3358,11 @@ void RenderBuilderApp::DrawAssetCatalogPanel()
 
 void RenderBuilderApp::DrawDiagnosticsPanel()
 {
-    ImGui::Begin("Compile Diagnostics");
+    if (!ImGui::Begin("Compile Diagnostics", &m_showDiagnosticsPanel))
+    {
+        ImGui::End();
+        return;
+    }
     if (m_lastCompileSucceeded)
     {
         ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f), "Last compile succeeded.");
@@ -3302,7 +3378,11 @@ void RenderBuilderApp::DrawDiagnosticsPanel()
 
 void RenderBuilderApp::DrawAutomationPanel()
 {
-    ImGui::Begin("Automation");
+    if (!ImGui::Begin("Automation", &m_showAutomationPanel))
+    {
+        ImGui::End();
+        return;
+    }
     bool enabled = m_localControlEnabled;
     if (ImGui::Checkbox("Enable Local Control", &enabled))
     {
@@ -3331,7 +3411,11 @@ void RenderBuilderApp::DrawAutomationPanel()
 void RenderBuilderApp::DrawAiChatPanel()
 {
     SetAiChatWindowDefaults();
-    ImGui::Begin("AI Chat");
+    if (!ImGui::Begin("AI Chat", &m_showAiChatPanel))
+    {
+        ImGui::End();
+        return;
+    }
 
     const AiChatRuntimeStatus status = m_aiChatService.Status();
     ImGui::Text("Status: %s", m_aiStatus.c_str());
@@ -3782,7 +3866,11 @@ std::string RenderBuilderApp::BuildAiMaterialSummaryJson() const
 void RenderBuilderApp::DrawStatsPanel()
 {
     const BackendCapabilities caps = m_backend.Capabilities();
-    ImGui::Begin("Renderer Stats");
+    if (!ImGui::Begin("Renderer Stats", &m_showStatsPanel))
+    {
+        ImGui::End();
+        return;
+    }
     ImGui::Text("Backend: Direct3D 12");
     ImGui::Text("Adapter: %s", caps.adapterName.c_str());
     ImGui::Text("Frame: %llu", static_cast<unsigned long long>(m_backend.FrameNumber()));
