@@ -9,6 +9,9 @@ Sponza / Bistro など大型 scene のスクリーンショットと確認ポイ
 ## 画面構成
 
 RenderBuilder は Dear ImGui Docking ベースの UI です。各 panel は tab をドラッグして配置を変えられます。
+各 panel は tab の閉じるボタンで閉じられます。閉じた panel は menu bar の `Window` メニューから再表示できます。`Window > Show All` を選ぶと、すべての panel をまとめて表示します。
+
+![Bistro scene with docked panels and AI Chat](<../images/RenderBuilder Shader Editor 2026_06_04 23_12_38.png>)
 
 | Panel | 主な用途 |
 | --- | --- |
@@ -18,6 +21,8 @@ RenderBuilder は Dear ImGui Docking ベースの UI です。各 panel は tab 
 | Shader Editor | HLSL shader set の source、entry point、compile 操作を管理します。 |
 | Compile Diagnostics | shader compile、scene import、texture load、project load/save の結果を表示します。 |
 | Renderer Stats | backend、adapter、frame time、preview target size、feature support、active environment などを確認します。 |
+| Automation | local MCP control bridge の状態と最後の command を確認します。 |
+| AI Chat | local `llama-server` / GGUF model の状態、prompt、AI action の履歴を表示します。 |
 
 ![組み込みCubeの初期表示](<../images/RenderBuilder Shader Editor 2026_05_24 23_22_59.png>)
 

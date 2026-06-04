@@ -27,7 +27,7 @@ RenderBuilder は、ランタイム HLSL 開発のための Windows / Visual Stu
 - DirectX 12 Agility SDK 1.619.3 を使う Direct3D 12 first のレンダラー。
 - Microsoft.Direct3D.DXC 1.9.2602.17 によるランタイム DXC コンパイル。
 - HLSL Shader Model 6.9 を既定ターゲットとして使用: `vs_6_9` / `ps_6_9`。
-- Dear ImGui docking UI による Viewport、Shader Editor、Material Inspector、Scene / Asset Browser、Compile Diagnostics、Renderer Stats パネル。
+- Dear ImGui docking UI による閉じられるパネル、Window 表示メニュー、Viewport、Shader Editor、Material Inspector、Scene / Asset Browser、Compile Diagnostics、Renderer Stats、Automation、AI Chat パネル。
 - `Shaders/RenderBuilderShaderABI.hlsli` による固定シェーダ ABI。
 - シェーダのコンパイル成功時は D3D12 PSO を再構築し、失敗時は最後に成功した PSO を維持して diagnostics にエラーを表示。
 - Shader Set Manager による duplicate/delete、compile all、profile 編集、material assignment overview、last-good PSO status 表示。

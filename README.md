@@ -27,7 +27,7 @@ The current D3D12 preview path is being exercised with both glTF Sponza-style sc
 - Direct3D 12 first renderer using DirectX 12 Agility SDK 1.619.3.
 - Runtime DXC compilation through Microsoft.Direct3D.DXC 1.9.2602.17.
 - HLSL Shader Model 6.9 default targets: `vs_6_9` and `ps_6_9`.
-- Dear ImGui docking UI with Viewport, Shader Editor, Material Inspector, Scene / Asset Browser, Compile Diagnostics, and Renderer Stats panels.
+- Dear ImGui docking UI with closeable panels, a Window visibility menu, Viewport, Shader Editor, Material Inspector, Scene / Asset Browser, Compile Diagnostics, Renderer Stats, Automation, and AI Chat panels.
 - Fixed shader ABI in `Shaders/RenderBuilderShaderABI.hlsli`.
 - Successful shader compiles rebuild the D3D12 PSO; failed compiles keep the last valid PSO and show diagnostics.
 - Shader Set Manager with duplicate/delete, compile-all, profile editing, per-material assignment overview, and last-good PSO status.
